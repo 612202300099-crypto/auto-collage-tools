@@ -1,0 +1,5 @@
+{
+  "name": "AutoCollage A3+",
+  "description": "Automated A3+ photo collage generator from local folders. Perfect for batch processing TikTok photo orders.",
+  "requestFramePermissions": []
+}

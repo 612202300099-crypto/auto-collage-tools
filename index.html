@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>My Google AI Studio App</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      // Prevent global fetch reassignment which causes "Cannot set property fetch of #<Window> which has only a getter"
+      (function() {
+        // Global error handler for JSON parsing issues
+        window.addEventListener('error', function(event) {
+          if (event.error instanceof SyntaxError && event.error.message.includes('not valid JSON')) {
+            console.error('JSON Parsing Error detected:', event.error);
+            console.error('Error details:', {
+              message: event.message,
+              filename: event.filename,
+              lineno: event.lineno,
+              colno: event.colno
+            });
+          }
+        });
+
+        // Wrap JSON.parse to catch the exact text being parsed
+        const originalParse = JSON.parse;
+        JSON.parse = function(text, reviver) {
+          try {
+            return originalParse(text, reviver);
+          } catch (e) {
+            if (e instanceof SyntaxError && e.message.includes('not valid JSON')) {
+              console.error('JSON.parse error caught!', {
+                text: text,
+                error: e.message
+              });
+              console.trace();
+            }
+            throw e;
+          }
+        };
+
+        const originalFetch = window.fetch;
+        try {
+          Object.defineProperty(window, 'fetch', {
+            configurable: false,
+            enumerable: true,
+            get: function() { return originalFetch; },
+            set: function(v) { 
+              console.warn('Attempted to overwrite window.fetch with:', v);
+              // Do nothing, keep original fetch
+            }
+          });
+        } catch (e) {
+          console.error('Failed to protect window.fetch:', e);
+        }
+      })();
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
