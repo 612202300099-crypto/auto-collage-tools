@@ -75,8 +75,8 @@ export async function generateCollageLocal(
     paddedElements.push(imgElements[paddedElements.length % imgElements.length]);
   }
 
-  // Tebal outer border hitam: 3px cetak = ~0.08 cm di 350DPI (cukup tegas terlihat saat print)
-  const OUTER_BORDER_PX = Math.round(0.08 * PX_PER_CM); // ~11px @ 350DPI
+  // Tebal outer border hitam: 0.2 mm = 0.02 cm → ~3px @ 350DPI (tipis & elegan saat print)
+  const OUTER_BORDER_PX = Math.round(0.02 * PX_PER_CM); // ~3px @ 350DPI
 
   // Draw 25 Polaroid frames
   for (let i = 0; i < Math.min(paddedElements.length, 25); i++) {
@@ -98,8 +98,8 @@ export async function generateCollageLocal(
       PHOTO_HEIGHT - OUTER_BORDER_PX
     );
 
-    // 2. Gambar frame off-white polaroid di dalam border hitam
-    ctx.fillStyle = "rgb(245, 245, 240)";
+    // 2. Gambar frame putih murni di dalam border hitam (sama dengan warna background kertas)
+    ctx.fillStyle = "rgb(255, 255, 255)";
     ctx.fillRect(
       left + OUTER_BORDER_PX,
       top + OUTER_BORDER_PX,
