@@ -11,10 +11,12 @@ import {
   FileImage,
   Settings,
   Activity,
-  Info
+  Info,
+  FileDown
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { generateCollageLocal } from './utils/collageGenerator';
+import { exportAllSheetsToPDF } from './utils/pdfExporter';
 
 interface LocalPackage {
   name: string;
@@ -32,6 +34,7 @@ export default function App() {
     total: 0,
     log: []
   });
+  const [exportFormat, setExportFormat] = useState<'png' | 'pdf'>('png');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFolderSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -89,34 +92,83 @@ export default function App() {
     }
 
     setIsProcessing(true);
-    setProgress({ current: 0, total: packages.length, log: ['[SYSTEM] Memulai proses batch...'] });
+
+    const isPDF = exportFormat === 'pdf';
+    const modeLabel = isPDF ? 'PDF (semua halaman)' : 'PNG (per halaman)';
+
+    setProgress({
+      current: 0,
+      total: packages.length,
+      log: [`[SYSTEM] Memulai proses batch... Mode: ${modeLabel}`]
+    });
+
+    // Kumpulkan semua blob untuk mode PDF
+    const collectedBlobs: Blob[] = [];
 
     for (let i = 0; i < packages.length; i++) {
       const pkg = packages[i];
-      setProgress(prev => ({ 
-        ...prev, 
-        current: i + 1, 
-        log: [`[PROCESS] Mengolah ${pkg.name} (${pkg.files.length} foto)...`, ...prev.log] 
+      setProgress(prev => ({
+        ...prev,
+        current: i + 1,
+        log: [`[PROCESS] Render ${pkg.name} (${pkg.files.length} foto)...`, ...prev.log]
       }));
 
       try {
         const filesToSend = pkg.files.slice(0, 25);
-        
-        // Membangun image 350 DPI di client untuk melewati limit server Vercel (4.5MB request & 10s timeout)
-        const blob = await generateCollageLocal(filesToSend, customerName, pkg.sheetIndex, pkg.totalSheets);
+        const blob = await generateCollageLocal(
+          filesToSend,
+          customerName,
+          pkg.sheetIndex,
+          pkg.totalSheets
+        );
 
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${customerName}_Sheet_${pkg.sheetIndex}.png`;
-        document.body.appendChild(a);
-        a.click();
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
-
-        setProgress(prev => ({ ...prev, log: [`[SUCCESS] Downloaded Sheet ${pkg.sheetIndex}`, ...prev.log] }));
+        if (isPDF) {
+          // Mode PDF: kumpulkan dulu, download di akhir
+          collectedBlobs.push(blob);
+          setProgress(prev => ({
+            ...prev,
+            log: [`[READY] Sheet ${pkg.sheetIndex} selesai dirender`, ...prev.log]
+          }));
+        } else {
+          // Mode PNG: langsung download per sheet
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `${customerName}_Sheet_${pkg.sheetIndex}.png`;
+          document.body.appendChild(a);
+          a.click();
+          window.URL.revokeObjectURL(url);
+          document.body.removeChild(a);
+          setProgress(prev => ({
+            ...prev,
+            log: [`[SUCCESS] Downloaded Sheet ${pkg.sheetIndex}.png`, ...prev.log]
+          }));
+        }
       } catch (err: any) {
-        setProgress(prev => ({ ...prev, log: [`[ERROR] ${pkg.name}: ${err.message}`, ...prev.log] }));
+        setProgress(prev => ({
+          ...prev,
+          log: [`[ERROR] ${pkg.name}: ${err.message}`, ...prev.log]
+        }));
+      }
+    }
+
+    // Mode PDF: setelah semua sheet terkumpul, gabung jadi 1 PDF
+    if (isPDF && collectedBlobs.length > 0) {
+      try {
+        setProgress(prev => ({
+          ...prev,
+          log: [`[PDF] Menggabungkan ${collectedBlobs.length} halaman ke dalam 1 file PDF...`, ...prev.log]
+        }));
+        await exportAllSheetsToPDF(collectedBlobs, customerName);
+        setProgress(prev => ({
+          ...prev,
+          log: [`[SUCCESS] PDF berhasil didownload (${collectedBlobs.length} halaman)`, ...prev.log]
+        }));
+      } catch (err: any) {
+        setProgress(prev => ({
+          ...prev,
+          log: [`[ERROR] Gagal membuat PDF: ${err.message}`, ...prev.log]
+        }));
       }
     }
 
@@ -267,7 +319,36 @@ export default function App() {
               )}
             </div>
 
-            <div className="p-6 bg-black/40 border-t border-zinc-800">
+            <div className="p-6 bg-black/40 border-t border-zinc-800 space-y-4">
+
+              {/* Format Selector: PNG vs PDF */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest flex items-center gap-2">
+                  <FileDown className="w-3 h-3" /> Export Format
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {(['png', 'pdf'] as const).map((fmt) => (
+                    <button
+                      key={fmt}
+                      onClick={() => setExportFormat(fmt)}
+                      disabled={isProcessing}
+                      className={`py-2.5 rounded text-xs font-mono font-bold uppercase tracking-widest border transition-all ${
+                        exportFormat === fmt
+                          ? 'bg-yellow-500 border-yellow-500 text-black'
+                          : 'bg-black/30 border-zinc-800 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300'
+                      }`}
+                    >
+                      {fmt === 'png' ? '📄 PNG' : '📦 PDF (1 File)'}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[9px] font-mono text-zinc-700">
+                  {exportFormat === 'png'
+                    ? 'Setiap sheet didownload sebagai file PNG terpisah'
+                    : 'Semua sheet digabung menjadi 1 file PDF multi-halaman'}
+                </p>
+              </div>
+
               <button 
                 onClick={startBatch}
                 disabled={isProcessing || packages.length === 0}
@@ -281,7 +362,7 @@ export default function App() {
                 ) : (
                   <>
                     <Play className="w-5 h-5 fill-current" />
-                    Execute Batch Process
+                    Execute — {exportFormat.toUpperCase()}
                   </>
                 )}
                 <div className="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform" />
