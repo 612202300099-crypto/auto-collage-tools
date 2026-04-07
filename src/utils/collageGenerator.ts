@@ -5,27 +5,27 @@ export async function generateCollageLocal(
   total: number
 ): Promise<Blob> {
   const PX_PER_CM = 137.795;
-  const CANVAS_WIDTH = Math.round(31.5 * PX_PER_CM); // 4341
-  const CANVAS_HEIGHT = Math.round(47.5 * PX_PER_CM); // 6545
+  const CANVAS_WIDTH = Math.round(31 * PX_PER_CM);  // 4271 px | ukuran kertas 31 cm
+  const CANVAS_HEIGHT = Math.round(47 * PX_PER_CM); // 6477 px | ukuran kertas 47 cm
   
   const PHOTO_WIDTH = Math.round(6 * PX_PER_CM); // 827
   const PHOTO_HEIGHT = Math.round(9 * PX_PER_CM); // 1240
   
   const GRID_SIZE = 5;
-  const GAP_X = Math.round(0.3 * PX_PER_CM);
-  const GAP_Y = Math.round(0.5 * PX_PER_CM);
+  const GAP_X = Math.round(0.25 * PX_PER_CM); // 0.25 cm = jarak samping antar foto (kiri-kanan)
+  const GAP_Y = Math.round(0.25 * PX_PER_CM); // 0.25 cm = jarak bawah  antar baris (atas-bawah)
   
   const totalGridWidth = (PHOTO_WIDTH * GRID_SIZE) + (GAP_X * (GRID_SIZE - 1));
   const totalGridHeight = (PHOTO_HEIGHT * GRID_SIZE) + (GAP_Y * (GRID_SIZE - 1));
   
+  // Horizontal: foto tetap ditengahkan kiri-kanan
   const MARGIN_X = (CANVAS_WIDTH - totalGridWidth) / 2;
-  const MARGIN_Y = (CANVAS_HEIGHT - totalGridHeight) / 2;
+  // Vertical: foto ditekan ke BAWAH kertas. Semua sisa ruang (~1cm) naik ke atas.
+  // Rumus: MARGIN_Y = total sisa ruang (bukan dibagi 2)
+  const MARGIN_Y = CANVAS_HEIGHT - totalGridHeight;
 
-  const FRAME_PADDING = Math.round(PHOTO_WIDTH * 0.08); // 66
-  const FRAME_BOTTOM_PADDING = Math.round(PHOTO_HEIGHT * 0.15); // 186
-  
-  const innerWidth = Math.round(PHOTO_WIDTH - (FRAME_PADDING * 2));
-  const innerHeight = Math.round(PHOTO_HEIGHT - FRAME_PADDING - FRAME_BOTTOM_PADDING);
+  const FRAME_PADDING = Math.round(PHOTO_WIDTH * 0.08);       // 66px  | jarak foto dari tepian frame polaroid
+  const FRAME_BOTTOM_PADDING = Math.round(PHOTO_HEIGHT * 0.15); // 186px | ruang putih bawah polaroid
 
   const canvas = document.createElement('canvas');
   canvas.width = CANVAS_WIDTH;
@@ -134,25 +134,27 @@ export async function generateCollageLocal(
     ctx.restore();
   }
 
-  // Gambar Label SVG "Nama Customer - P1"
-  const lastPhotoLeft = Math.round(MARGIN_X + (4 * (PHOTO_WIDTH + GAP_X)));
-  const lastPhotoTop = Math.round(MARGIN_Y + (4 * (PHOTO_HEIGHT + GAP_Y)));
-  
-  const labelWidth = 400;
-  const labelHeight = 60;
-  const labelX = lastPhotoLeft + (PHOTO_WIDTH - labelWidth); 
-  const labelY = lastPhotoTop - 70; // 70px above the last photo
-  
+  // Label "Nama Customer - P1" → ditaruh di ruang kosong 1cm bagian ATAS kertas
+  // Horizontal: center di tengah canvas
+  // Vertikal  : center di dalam ruang atas (MARGIN_Y = ~141px ~1cm)
+  const labelWidth = Math.round(5 * PX_PER_CM);  // ~690px ≈ 5cm, proporsional untuk area atas
+  const labelHeight = Math.round(MARGIN_Y * 0.6); // 60% dari tinggi ruang atas, biar ada padding
+
+  const labelX = Math.round((CANVAS_WIDTH - labelWidth) / 2); // center horizontal
+  const labelY = Math.round((MARGIN_Y - labelHeight) / 2);    // center vertikal dalam ruang atas
+
   // Background Label (Hitam)
+  const labelRadius = Math.round(labelHeight * 0.2); // corner radius proporsional
   ctx.fillStyle = "black";
   ctx.beginPath();
-  ctx.roundRect(labelX, labelY, labelWidth, labelHeight, 5); // Corner radius 5
+  ctx.roundRect(labelX, labelY, labelWidth, labelHeight, labelRadius);
   ctx.fill();
 
   // Text label
   const labelText = `${customerName.toUpperCase()} - P${index}`;
+  const fontSize = Math.round(labelHeight * 0.45); // font size 45% dari tinggi label
   ctx.fillStyle = "white";
-  ctx.font = "bold 24px sans-serif";
+  ctx.font = `bold ${fontSize}px sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(labelText, labelX + (labelWidth / 2), labelY + (labelHeight / 2));

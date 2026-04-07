@@ -199,11 +199,14 @@ export default function App() {
             </div>
             <div className="space-y-3">
               {[
-                ['Format', '31.5 x 47.5 cm'],
+                ['Format', '31 x 47 cm'],
                 ['Resolution', '350 DPI'],
                 ['Photo Size', '6 x 9 cm'],
                 ['Grid', '5 x 5 (25 Photos)'],
-                ['Style', 'Polaroid (White Frame)']
+                ['Gap Samping', '0.25 cm'],
+                ['Gap Bawah', '0.25 cm'],
+                ['Layout', 'Bottom Aligned'],
+                ['Border', '0.2 mm (Hitam)'],
               ].map(([label, val]) => (
                 <div key={label} className="flex justify-between items-center border-b border-zinc-900 pb-2">
                   <span className="text-[10px] text-zinc-600 font-mono uppercase">{label}</span>
