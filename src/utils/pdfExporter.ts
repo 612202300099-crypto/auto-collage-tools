@@ -1,4 +1,5 @@
 import jsPDF from 'jspdf';
+import { yieldToMain } from './yieldToMain';
 
 // Ukuran kertas dalam cm (harus konsisten dengan collageGenerator.ts)
 const PAGE_WIDTH_CM = 31;
@@ -47,6 +48,9 @@ export async function exportAllSheetsToPDF(
 
     // Tempel gambar memenuhi seluruh halaman (0,0 → 31x47 cm)
     pdf.addImage(dataUrl, 'PNG', 0, 0, PAGE_WIDTH_CM, PAGE_HEIGHT_CM);
+
+    // Yield setelah setiap halaman di-embed — addImage sangat berat (konversi PNG→base64 full-res)
+    await yieldToMain();
   }
 
   const safeFileName = customerName.replace(/[^a-zA-Z0-9_\-]/g, '_');
