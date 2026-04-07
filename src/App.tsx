@@ -16,7 +16,8 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { generateCollageLocal } from './utils/collageGenerator';
-import { exportAllSheetsToPDF } from './utils/pdfExporter';
+import { buildAndDownloadPDF } from './utils/pdfExporter';
+import type { SheetInput } from './utils/pdfExporter';
 
 interface LocalPackage {
   name: string;
@@ -93,17 +94,19 @@ export default function App() {
 
     setIsProcessing(true);
 
-    const isPDF = exportFormat === 'pdf';
-    const modeLabel = isPDF ? 'PDF (semua halaman)' : 'PNG (per halaman)';
+    if (exportFormat === 'pdf') {
+      await runPDFBatch();
+    } else {
+      await runPNGBatch();
+    }
 
-    setProgress({
-      current: 0,
-      total: packages.length,
-      log: [`[SYSTEM] Memulai proses batch... Mode: ${modeLabel}`]
-    });
+    setIsProcessing(false);
+    setProgress(prev => ({ ...prev, log: ['[SYSTEM] Semua proses selesai.', ...prev.log] }));
+  };
 
-    // Kumpulkan semua blob untuk mode PDF
-    const collectedBlobs: Blob[] = [];
+  // ── Mode PNG: render + download satu per satu ──────────────────────────────
+  const runPNGBatch = async () => {
+    setProgress({ current: 0, total: packages.length, log: ['[SYSTEM] Mode PNG — mulai proses batch...'] });
 
     for (let i = 0; i < packages.length; i++) {
       const pkg = packages[i];
@@ -114,66 +117,57 @@ export default function App() {
       }));
 
       try {
-        const filesToSend = pkg.files.slice(0, 25);
         const blob = await generateCollageLocal(
-          filesToSend,
+          pkg.files.slice(0, 25),
           customerName,
           pkg.sheetIndex,
           pkg.totalSheets
         );
+        const url = window.URL.createObjectURL(blob);
+        const a   = document.createElement('a');
+        a.href     = url;
+        a.download = `${customerName}_Sheet_${pkg.sheetIndex}.png`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        setProgress(prev => ({ ...prev, log: [`[SUCCESS] Downloaded Sheet ${pkg.sheetIndex}.png`, ...prev.log] }));
+      } catch (err: any) {
+        setProgress(prev => ({ ...prev, log: [`[ERROR] ${pkg.name}: ${err.message}`, ...prev.log] }));
+      }
+    }
+  };
 
-        if (isPDF) {
-          // Mode PDF: kumpulkan dulu, download di akhir
-          collectedBlobs.push(blob);
+  // ── Mode PDF: streaming — 1 sheet masuk PDF lalu langsung dibuang dari RAM ─
+  const runPDFBatch = async () => {
+    setProgress({ current: 0, total: packages.length, log: ['[SYSTEM] Mode PDF — streaming satu sheet per satu...'] });
+
+    const sheetInputs: SheetInput[] = packages.map(pkg => ({
+      files:       pkg.files.slice(0, 25),
+      name:        pkg.name,
+      sheetIndex:  pkg.sheetIndex,
+      totalSheets: pkg.totalSheets,
+    }));
+
+    try {
+      await buildAndDownloadPDF(
+        sheetInputs,
+        customerName,
+        (current, total, sheetName) => {
           setProgress(prev => ({
             ...prev,
-            log: [`[READY] Sheet ${pkg.sheetIndex} selesai dirender`, ...prev.log]
-          }));
-        } else {
-          // Mode PNG: langsung download per sheet
-          const url = window.URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `${customerName}_Sheet_${pkg.sheetIndex}.png`;
-          document.body.appendChild(a);
-          a.click();
-          window.URL.revokeObjectURL(url);
-          document.body.removeChild(a);
-          setProgress(prev => ({
-            ...prev,
-            log: [`[SUCCESS] Downloaded Sheet ${pkg.sheetIndex}.png`, ...prev.log]
+            current,
+            log: [`[PDF] Sheet ${current}/${total} — ${sheetName}`, ...prev.log]
           }));
         }
-      } catch (err: any) {
-        setProgress(prev => ({
-          ...prev,
-          log: [`[ERROR] ${pkg.name}: ${err.message}`, ...prev.log]
-        }));
-      }
+      );
+      setProgress(prev => ({
+        ...prev,
+        log: [`[SUCCESS] PDF berhasil didownload (${sheetInputs.length} halaman)`, ...prev.log]
+      }));
+    } catch (err: any) {
+      setProgress(prev => ({ ...prev, log: [`[ERROR] Gagal membuat PDF: ${err.message}`, ...prev.log] }));
     }
-
-    // Mode PDF: setelah semua sheet terkumpul, gabung jadi 1 PDF
-    if (isPDF && collectedBlobs.length > 0) {
-      try {
-        setProgress(prev => ({
-          ...prev,
-          log: [`[PDF] Menggabungkan ${collectedBlobs.length} halaman ke dalam 1 file PDF...`, ...prev.log]
-        }));
-        await exportAllSheetsToPDF(collectedBlobs, customerName);
-        setProgress(prev => ({
-          ...prev,
-          log: [`[SUCCESS] PDF berhasil didownload (${collectedBlobs.length} halaman)`, ...prev.log]
-        }));
-      } catch (err: any) {
-        setProgress(prev => ({
-          ...prev,
-          log: [`[ERROR] Gagal membuat PDF: ${err.message}`, ...prev.log]
-        }));
-      }
-    }
-
-    setIsProcessing(false);
-    setProgress(prev => ({ ...prev, log: ['[SYSTEM] Semua proses selesai.', ...prev.log] }));
   };
 
   return (
