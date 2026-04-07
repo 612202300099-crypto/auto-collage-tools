@@ -75,6 +75,9 @@ export async function generateCollageLocal(
     paddedElements.push(imgElements[paddedElements.length % imgElements.length]);
   }
 
+  // Tebal outer border hitam: 3px cetak = ~0.08 cm di 350DPI (cukup tegas terlihat saat print)
+  const OUTER_BORDER_PX = Math.round(0.08 * PX_PER_CM); // ~11px @ 350DPI
+
   // Draw 25 Polaroid frames
   for (let i = 0; i < Math.min(paddedElements.length, 25); i++) {
     const row = Math.floor(i / GRID_SIZE);
@@ -83,28 +86,51 @@ export async function generateCollageLocal(
     const left = Math.round(MARGIN_X + (col * (PHOTO_WIDTH + GAP_X)));
     const top = Math.round(MARGIN_Y + (row * (PHOTO_HEIGHT + GAP_Y)));
 
-    // 1. Gambar frame off-white polaroid
-    ctx.fillStyle = "rgb(245, 245, 240)";
-    ctx.fillRect(left, top, PHOTO_WIDTH, PHOTO_HEIGHT);
+    // 1. Gambar outer border hitam di LUAR frame polaroid
+    //    strokeRect menggambar garis tepian saja, tidak mengisi area dalam
+    //    lineWidth dibagi 2 karena strokeRect menggambar setengah ke dalam, setengah ke luar
+    ctx.strokeStyle = "rgb(0, 0, 0)";
+    ctx.lineWidth = OUTER_BORDER_PX;
+    ctx.strokeRect(
+      left + OUTER_BORDER_PX / 2,
+      top + OUTER_BORDER_PX / 2,
+      PHOTO_WIDTH - OUTER_BORDER_PX,
+      PHOTO_HEIGHT - OUTER_BORDER_PX
+    );
 
-    // 2. Gambar foto dalam frame (Object Fit Cover)
+    // 2. Gambar frame off-white polaroid di dalam border hitam
+    ctx.fillStyle = "rgb(245, 245, 240)";
+    ctx.fillRect(
+      left + OUTER_BORDER_PX,
+      top + OUTER_BORDER_PX,
+      PHOTO_WIDTH - OUTER_BORDER_PX * 2,
+      PHOTO_HEIGHT - OUTER_BORDER_PX * 2
+    );
+
+    // 3. Gambar foto dalam frame (Object Fit Cover)
     const img = paddedElements[i];
-    const targetX = left + FRAME_PADDING;
-    const targetY = top + FRAME_PADDING;
+    const innerLeft = left + OUTER_BORDER_PX;
+    const innerTop = top + OUTER_BORDER_PX;
+    const innerFrameWidth = PHOTO_WIDTH - OUTER_BORDER_PX * 2;
+    const innerFrameHeight = PHOTO_HEIGHT - OUTER_BORDER_PX * 2;
+
+    // Area foto bersih (dikurangi padding polaroid dari frame yg sudah diperkecil border)
+    const photoAreaX = innerLeft + FRAME_PADDING;
+    const photoAreaY = innerTop + FRAME_PADDING;
+    const photoAreaW = innerFrameWidth - FRAME_PADDING * 2;
+    const photoAreaH = innerFrameHeight - FRAME_PADDING - FRAME_BOTTOM_PADDING;
     
-    const scale = Math.max(innerWidth / img.naturalWidth, innerHeight / img.naturalHeight);
-    const sw = innerWidth / scale;
-    const sh = innerHeight / scale;
+    const scale = Math.max(photoAreaW / img.naturalWidth, photoAreaH / img.naturalHeight);
+    const sw = photoAreaW / scale;
+    const sh = photoAreaH / scale;
     const sx = (img.naturalWidth - sw) / 2;
     const sy = (img.naturalHeight - sh) / 2;
 
     ctx.save();
-    // Potong agar membulat atau rapi dalam inner rect (opsional, polaroid biasa kotak tajam)
     ctx.beginPath();
-    ctx.rect(targetX, targetY, innerWidth, innerHeight);
+    ctx.rect(photoAreaX, photoAreaY, photoAreaW, photoAreaH);
     ctx.clip();
-    
-    ctx.drawImage(img, sx, sy, sw, sh, targetX, targetY, innerWidth, innerHeight);
+    ctx.drawImage(img, sx, sy, sw, sh, photoAreaX, photoAreaY, photoAreaW, photoAreaH);
     ctx.restore();
   }
 
