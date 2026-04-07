@@ -150,8 +150,8 @@ export async function generateCollageLocal(
   ctx.roundRect(labelX, labelY, labelWidth, labelHeight, labelRadius);
   ctx.fill();
 
-  // Text label
-  const labelText = `${customerName.toUpperCase()} - P${index}`;
+  // Text label → format: "NAMA CUSTOMER - P1/3" (halaman ini / total halaman)
+  const labelText = `${customerName.toUpperCase()} - P${index}/${total}`;
   const fontSize = Math.round(labelHeight * 0.45); // font size 45% dari tinggi label
   ctx.fillStyle = "white";
   ctx.font = `bold ${fontSize}px sans-serif`;
