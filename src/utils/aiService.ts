@@ -1,123 +1,145 @@
 /**
- * aiService.ts — Jembatan ke OpenAI Vision (GPT-4o-mini).
+ * aiService.ts — Client aman untuk AI Face Detection.
  *
- * Digunakan untuk mendeteksi koordinat wajah agar sistem bisa melakukan
- * "Smart Cropping" (mencegah wajah terpotong di kolase).
+ * Perubahan arsitektur:
+ *   SEBELUM: Browser → OpenAI langsung (API Key terekspos!)
+ *   SESUDAH: Browser → /api/detect-face (server kita) → OpenAI (API Key aman di server!)
+ *
+ * Tidak ada satupun credential yang menyentuh kode ini.
  */
 
-const OPENAI_API_KEY = import.meta.env.VITE_OPENAI_API_KEY;
-const API_URL = 'https://api.openai.com/v1/chat/completions';
+// ─── Tipe ─────────────────────────────────────────────────────────────────────
 
 export interface FaceBBox {
-  ymin: number; // 0 - 1000
-  xmin: number; // 0 - 1000
-  ymax: number; // 0 - 1000
-  xmax: number; // 0 - 1000
+  ymin: number; // 0 – 1000
+  xmin: number; // 0 – 1000
+  ymax: number; // 0 – 1000
+  xmax: number; // 0 – 1000
 }
 
+/** URL endpoint internal. Otomatis relatif ke domain yang sedang berjalan (dev & prod). */
+const DETECT_FACE_ENDPOINT = '/api/detect-face';
+
+/** Resolusi maksimum gambar sebelum dikirim ke server (hemat bandwidth & biaya token AI). */
+const RESIZE_MAX_DIM = 512;
+
+/** Kualitas kompresi JPEG sebelum dikirim (0.7 = cukup untuk deteksi wajah, file kecil). */
+const RESIZE_JPEG_QUALITY = 0.7;
+
+// ─── Fungsi Publik ────────────────────────────────────────────────────────────
+
 /**
- * Mendeteksi wajah menggunakan OpenAI Vision.
- * Menggunakan gpt-4o-mini untuk efisiensi biaya dan kecepatan.
+ * Mendeteksi wajah dalam sebuah file gambar.
+ *
+ * Gambar akan di-resize terlebih dahulu di sisi klien sebelum dikirim ke server
+ * untuk menghemat bandwidth dan waktu respons.
+ *
+ * @param file - File gambar yang akan dianalisis.
+ * @returns Bounding box grup wajah dalam koordinat [0-1000], atau null jika gagal/tidak ada wajah.
  */
 export async function detectFace(file: File): Promise<FaceBBox | null> {
-  if (!OPENAI_API_KEY) {
-    console.error('[AI] API Key tidak ditemukan di environment!');
-    return null;
-  }
-
   try {
-    // 1. Perkecil gambar ke resolution rendah (misal 512px) 
-    // agar hemat bandwidth & biaya API (token vision dihitung berdasarkan resolusi)
-    const base64Image = await resizeAndConvertToBase64(file, 512);
+    // 1. Resize & konversi ke Base64 di sisi klien (hemat upload bandwidth)
+    const imageBase64 = await resizeAndConvertToBase64(file, RESIZE_MAX_DIM, RESIZE_JPEG_QUALITY);
 
-    // 2. Kirim ke OpenAI
-    const response = await fetch(API_URL, {
+    // 2. Kirim ke Serverless Function kita (bukan langsung ke OpenAI)
+    const response = await fetch(DETECT_FACE_ENDPOINT, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${OPENAI_API_KEY}`
       },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: "Respond ONLY with a valid JSON. Detect ALL human faces in this image and return a single bounding box that encompasses ALL of them in normalized coordinates [0-1000]. Format: {\"face\": [ymin, xmin, ymax, xmax]}. If no face, return {\"face\": null}. This is for smart cropping, so the box should cover the entire group."
-              },
-              {
-                type: "image_url",
-                image_url: {
-                  url: `data:image/jpeg;base64,${base64Image}`
-                }
-              }
-            ]
-          }
-        ],
-        response_format: { type: "json_object" },
-        max_tokens: 100,
-      })
+      body: JSON.stringify({ imageBase64 }),
     });
 
     if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error?.message || 'Gagal memanggil OpenAI API');
+      const errorData = await response.json() as { error?: string };
+      // Lempar error dengan pesan dari server agar bisa terlogging dengan konteks yang benar
+      throw new Error(errorData?.error ?? `Server responded with status ${response.status}`);
     }
 
-    const data = await response.json();
-    const result = JSON.parse(data.choices[0].message.content);
+    const data = await response.json() as { face: [number, number, number, number] | null };
 
-    if (result.face && Array.isArray(result.face)) {
-      const [ymin, xmin, ymax, xmax] = result.face;
+    // Server sudah memvalidasi & membersihkan respons, kita tinggal pakai
+    if (data.face) {
+      const { ymin, xmin, ymax, xmax } = data.face as unknown as FaceBBox;
       return { ymin, xmin, ymax, xmax };
     }
 
     return null;
-  } catch (error) {
-    console.warn('[AI] Deteksi wajah gagal, menggunakan center-crop sebagai fallback:', error);
+
+  } catch (err) {
+    // Gagal deteksi bukan error fatal — collage tetap dibuat dengan center-crop sebagai fallback
+    console.warn('[AI] Face detection failed, falling back to center-crop:', err);
     return null;
   }
 }
 
+// ─── Utilitas Internal ────────────────────────────────────────────────────────
+
 /**
- * Helper: Perkecil gambar & ubah ke Base64 JPEG.
+ * Me-resize gambar ke dimensi maksimum dan mengekspor hasilnya sebagai string Base64 JPEG.
+ * Proses ini dilakukan di canvas browser (tidak ada data yang dikirim keluar dulu).
+ *
+ * @param file - File sumber.
+ * @param maxDim - Dimensi terpanjang (lebar atau tinggi) setelah resize.
+ * @param quality - Kualitas JPEG output (0.0 – 1.0).
+ * @returns String Base64 murni (tanpa prefix `data:image/jpeg;base64,`).
  */
-async function resizeAndConvertToBase64(file: File, maxDim: number): Promise<string> {
+function resizeAndConvertToBase64(
+  file: File,
+  maxDim: number,
+  quality: number
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let width = img.width;
-        let height = img.height;
 
+    reader.onload = (readerEvent) => {
+      const img = new Image();
+
+      img.onload = () => {
+        // Hitung dimensi baru dengan mempertahankan aspect ratio
+        let { width, height } = img;
         if (width > height) {
           if (width > maxDim) {
-            height *= maxDim / width;
+            height = Math.round(height * (maxDim / width));
             width = maxDim;
           }
         } else {
           if (height > maxDim) {
-            width *= maxDim / height;
+            width = Math.round(width * (maxDim / height));
             height = maxDim;
           }
         }
 
+        const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
+
         const ctx = canvas.getContext('2d');
-        ctx?.drawImage(img, 0, 0, width, height);
-        
-        // JPEG 0.7 quality sudah cukup untuk deteksi wajah
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
-        resolve(dataUrl.split(',')[1]);
+        if (!ctx) {
+          reject(new Error('Failed to get canvas 2D context.'));
+          return;
+        }
+
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // Ekstrak Base64 murni (hapus prefix `data:image/jpeg;base64,`)
+        const dataUrl = canvas.toDataURL('image/jpeg', quality);
+        const base64 = dataUrl.split(',')[1];
+
+        if (!base64) {
+          reject(new Error('Failed to export canvas to Base64.'));
+          return;
+        }
+
+        resolve(base64);
       };
-      img.src = e.target?.result as string;
+
+      img.onerror = () => reject(new Error(`Failed to load image: ${file.name}`));
+      img.src = readerEvent.target?.result as string;
     };
-    reader.onerror = reject;
+
+    reader.onerror = () => reject(new Error(`Failed to read file: ${file.name}`));
+    reader.readAsDataURL(file);
   });
 }

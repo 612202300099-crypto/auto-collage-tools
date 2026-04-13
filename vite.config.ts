@@ -1,7 +1,7 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import {defineConfig, loadEnv} from 'vite';
+import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
@@ -24,8 +24,19 @@ export default defineConfig(() => {
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modifyâ€”file watching is disabled to prevent flickering during agent edits.
+      // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
+
+      // Proxy /api/* ke Vercel Dev Server saat development lokal.
+      // Cara pakai: jalankan `vercel dev` di terminal terpisah (port 3000),
+      // lalu tetap jalankan `npm run dev` seperti biasa (port 5173).
+      proxy: {
+        '/api': {
+          target: 'http://localhost:3000',
+          changeOrigin: true,
+          secure: false,
+        },
+      },
     },
   };
 });
