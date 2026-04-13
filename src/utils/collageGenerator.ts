@@ -1,4 +1,5 @@
 import { yieldToMain } from './yieldToMain';
+import { detectFace } from './aiService';
 
 // ─────────────────────────────────────────────────────────────────
 // INTERNAL: build + draw canvas — dipakai oleh kedua export di bawah
@@ -7,7 +8,9 @@ async function buildCollageCanvas(
   imageFiles: File[],
   customerName: string,
   index: number,
-  total: number
+  total: number,
+  useAI: boolean = true,
+  onPhotoProgress?: (current: number, total: number, status: string) => void
 ): Promise<HTMLCanvasElement> {
   const PX_PER_CM = 137.795;
   const CANVAS_WIDTH  = Math.round(31 * PX_PER_CM); // 4271 px
@@ -17,8 +20,8 @@ async function buildCollageCanvas(
   const PHOTO_HEIGHT = Math.round(9 * PX_PER_CM); // 1240 px
 
   const GRID_SIZE = 5;
-  const GAP_X = Math.round(0.25 * PX_PER_CM);
-  const GAP_Y = Math.round(0.25 * PX_PER_CM);
+  const GAP_X = 0; // Diganti menjadi 0 agar foto saling menempel sempurna
+  const GAP_Y = 0; // Diganti menjadi 0 agar foto saling menempel sempurna
 
   const totalGridWidth  = (PHOTO_WIDTH  * GRID_SIZE) + (GAP_X * (GRID_SIZE - 1));
   const totalGridHeight = (PHOTO_HEIGHT * GRID_SIZE) + (GAP_Y * (GRID_SIZE - 1));
@@ -26,8 +29,9 @@ async function buildCollageCanvas(
   const MARGIN_X = (CANVAS_WIDTH - totalGridWidth) / 2;   // center horizontal
   const MARGIN_Y = CANVAS_HEIGHT - totalGridHeight;        // bottom-aligned (sisa ruang ke atas)
 
-  const FRAME_PADDING        = Math.round(PHOTO_WIDTH  * 0.08);  // 66px
-  const FRAME_BOTTOM_PADDING = Math.round(PHOTO_HEIGHT * 0.15);  // 186px
+    // Padding yang lebih tipis agar foto terasa lebih "FULL"
+  const FRAME_PADDING        = Math.round(PHOTO_WIDTH  * 0.04);  // Perkecil dari 0.08 ke 0.04
+  const FRAME_BOTTOM_PADDING = Math.round(PHOTO_HEIGHT * 0.10);  // Perkecil dari 0.15 ke 0.10
 
   const canvas = document.createElement('canvas');
   canvas.width  = CANVAS_WIDTH;
@@ -58,7 +62,8 @@ async function buildCollageCanvas(
     try {
       const img = await loadImage(imageFiles[i]);
       imgElements.push(img);
-      await yieldToMain(); // napas browser setelah setiap decode
+      onPhotoProgress?.(i + 1, 25, `Decoding ${imageFiles[i].name}...`);
+      await yieldToMain();
     } catch (err) {
       console.error(err); // skip gambar corrupt
     }
@@ -72,7 +77,10 @@ async function buildCollageCanvas(
     paddedElements.push(imgElements[paddedElements.length % imgElements.length]);
   }
 
-  const OUTER_BORDER_PX = Math.round(0.02 * PX_PER_CM); // 0.2mm = ~3px
+  const OUTER_BORDER_PX = 0; // Dihilangkan seluruhnya karena kita menggunakan garis bantu potong di persimpangan
+
+  // Cache untuk deteksi wajah agar tidak panggil AI berkali-kali untuk foto yang sama (duplikat)
+  const faceCache = new Map<string, any>();
 
   // Draw 25 polaroid frames — yield setelah setiap foto (kanvas 27MP sangat berat)
   for (let i = 0; i < Math.min(paddedElements.length, 25); i++) {
@@ -81,50 +89,133 @@ async function buildCollageCanvas(
     const left = Math.round(MARGIN_X + (col * (PHOTO_WIDTH  + GAP_X)));
     const top  = Math.round(MARGIN_Y + (row * (PHOTO_HEIGHT + GAP_Y)));
 
-    // 1. Outer border hitam 0.2mm
-    ctx.strokeStyle = 'rgb(0, 0, 0)';
-    ctx.lineWidth   = OUTER_BORDER_PX;
-    ctx.strokeRect(
-      left + OUTER_BORDER_PX / 2,
-      top  + OUTER_BORDER_PX / 2,
-      PHOTO_WIDTH  - OUTER_BORDER_PX,
-      PHOTO_HEIGHT - OUTER_BORDER_PX
-    );
-
-    // 2. Frame putih (sama dengan background)
+    // 1. Frame putih (kertas polaroid full, tanpa border hitam)
     ctx.fillStyle = 'rgb(255, 255, 255)';
     ctx.fillRect(
-      left + OUTER_BORDER_PX,
-      top  + OUTER_BORDER_PX,
-      PHOTO_WIDTH  - OUTER_BORDER_PX * 2,
-      PHOTO_HEIGHT - OUTER_BORDER_PX * 2
+      left,
+      top,
+      PHOTO_WIDTH,
+      PHOTO_HEIGHT
     );
 
-    // 3. Foto dalam frame (object-fit: cover)
+    // 2. Foto dalam frame (merender ke Canvas Destination)
     const img           = paddedElements[i];
-    const innerLeft     = left + OUTER_BORDER_PX;
-    const innerTop      = top  + OUTER_BORDER_PX;
-    const innerFrameW   = PHOTO_WIDTH  - OUTER_BORDER_PX * 2;
-    const innerFrameH   = PHOTO_HEIGHT - OUTER_BORDER_PX * 2;
-    const photoAreaX    = innerLeft + FRAME_PADDING;
-    const photoAreaY    = innerTop  + FRAME_PADDING;
-    const photoAreaW    = innerFrameW - FRAME_PADDING * 2;
-    const photoAreaH    = innerFrameH - FRAME_PADDING - FRAME_BOTTOM_PADDING;
+    const photoAreaX    = left + FRAME_PADDING;
+    const photoAreaY    = top  + FRAME_PADDING;
+    const photoAreaW    = PHOTO_WIDTH - FRAME_PADDING * 2;
+    const photoAreaH    = PHOTO_HEIGHT - FRAME_PADDING - FRAME_BOTTOM_PADDING;
 
-    const scale = Math.max(photoAreaW / img.naturalWidth, photoAreaH / img.naturalHeight);
-    const sw = photoAreaW / scale;
-    const sh = photoAreaH / scale;
-    const sx = (img.naturalWidth  - sw) / 2;
-    const sy = (img.naturalHeight - sh) / 2;
+    // --- ULTRA-SMART ADAPTIVE SCALING (AI) ---
+    const currentFile = imageFiles[i % imageFiles.length];
+    
+    // Default Cover Scale
+    let scale = Math.max(photoAreaW / img.naturalWidth, photoAreaH / img.naturalHeight);
+    let focalX = img.naturalWidth / 2;
+    let focalY = img.naturalHeight / 2;
+
+    if (useAI) {
+      const cacheKey = currentFile.name + currentFile.size;
+      let face = faceCache.get(cacheKey);
+
+      if (face === undefined) {
+        onPhotoProgress?.(i + 1, 25, `AI Deep Scanning ${currentFile.name}...`);
+        face = await detectFace(currentFile);
+        faceCache.set(cacheKey, face);
+      }
+
+      if (face) {
+        const fx = (face.xmin / 1000) * img.naturalWidth;
+        const fy = (face.ymin / 1000) * img.naturalHeight;
+        const fw = ((face.xmax - face.xmin) / 1000) * img.naturalWidth;
+        const fh = ((face.ymax - face.ymin) / 1000) * img.naturalHeight;
+
+        // "Kecilin Otomatis" jika wajah tidak muat di crop standar
+        const requiredScaleW = photoAreaW / fw;
+        const requiredScaleH = photoAreaH / fh;
+        
+        // Pilih scale yang paling "aman" agar wajah tidak terpotong
+        const smartScale = Math.min(requiredScaleW, requiredScaleH, scale);
+        scale = smartScale;
+
+        // Pusatkan pada tengah-tengah grup wajah
+        focalX = fx + fw / 2;
+        focalY = fy + fh / 2;
+        
+        onPhotoProgress?.(i + 1, 25, `AI Smart-Fit applied (Perfect Centering)`);
+      }
+    }
+    // ------------------------------------------
+
+    // Logika Penggambaran Destination (Bebas Glitch Koordinat Negatif)
+    const drawW = img.naturalWidth * scale;
+    const drawH = img.naturalHeight * scale;
+
+    const destFaceCenterX = photoAreaX + photoAreaW / 2;
+    const destFaceCenterY = photoAreaY + photoAreaH / 2;
+
+    let destX = destFaceCenterX - (focalX * scale);
+    let destY = destFaceCenterY - (focalY * scale);
+
+    // Final Clamp: Jaga agar area kosong tidak muncul kalau tidak perlu
+    if (drawW >= photoAreaW) {
+      destX = Math.min(destX, photoAreaX);
+      destX = Math.max(destX, photoAreaX + photoAreaW - drawW);
+    } else {
+      // Jika di zoom-out sampai lebih kecil dari frame, pastikan berada persis di TENGAH
+      destX = photoAreaX + (photoAreaW - drawW) / 2;
+    }
+
+    if (drawH >= photoAreaH) {
+      destY = Math.min(destY, photoAreaY);
+      destY = Math.max(destY, photoAreaY + photoAreaH - drawH);
+    } else {
+      destY = photoAreaY + (photoAreaH - drawH) / 2;
+    }
 
     ctx.save();
     ctx.beginPath();
     ctx.rect(photoAreaX, photoAreaY, photoAreaW, photoAreaH);
     ctx.clip();
-    ctx.drawImage(img, sx, sy, sw, sh, photoAreaX, photoAreaY, photoAreaW, photoAreaH);
+    
+    ctx.drawImage(img, destX, destY, drawW, drawH);
     ctx.restore();
 
-    await yieldToMain(); // yield setelah setiap foto — KRUSIAL anti-freeze
+    await yieldToMain(); 
+  }
+
+  // --- MENGGAMBAR GARIS BANTU POTONG (CROP MARKS) ---
+  const CROP_MARK_LEN = Math.round(0.5 * PX_PER_CM); // Panjang garis potong ~5mm
+  ctx.strokeStyle = 'rgb(0, 0, 0)';
+  ctx.lineWidth = Math.round(0.015 * PX_PER_CM); // Ketebalan tipis untuk panduan potong
+  
+  for (let r = 0; r <= GRID_SIZE; r++) {
+    for (let c = 0; c <= GRID_SIZE; c++) {
+      const cx = Math.round(MARGIN_X + c * PHOTO_WIDTH);
+      const cy = Math.round(MARGIN_Y + r * PHOTO_HEIGHT);
+      
+      ctx.beginPath();
+      // Garis ke Atas (Tengah & Bawah)
+      if (r > 0) {
+         ctx.moveTo(cx, cy);
+         ctx.lineTo(cx, cy - CROP_MARK_LEN);
+      }
+      // Garis ke Bawah (Tengah & Atas)
+      if (r < GRID_SIZE) {
+         ctx.moveTo(cx, cy);
+         ctx.lineTo(cx, cy + CROP_MARK_LEN);
+      }
+      // Garis ke Kiri (Tengah & Kanan)
+      if (c > 0) {
+         ctx.moveTo(cx, cy);
+         ctx.lineTo(cx - CROP_MARK_LEN, cy);
+      }
+      // Garis ke Kanan (Tengah & Kiri)
+      if (c < GRID_SIZE) {
+         ctx.moveTo(cx, cy);
+         ctx.lineTo(cx + CROP_MARK_LEN, cy);
+      }
+      ctx.stroke();
+    }
   }
 
   // Label "NAMA - P1/3" di ruang atas (~1cm)
@@ -157,9 +248,11 @@ export async function generateCollageLocal(
   imageFiles: File[],
   customerName: string,
   index: number,
-  total: number
+  total: number,
+  useAI: boolean = true,
+  onPhotoProgress?: (current: number, total: number, status: string) => void
 ): Promise<Blob> {
-  const canvas = await buildCollageCanvas(imageFiles, customerName, index, total);
+  const canvas = await buildCollageCanvas(imageFiles, customerName, index, total, useAI, onPhotoProgress);
   return new Promise((resolve, reject) => {
     canvas.toBlob(
       (blob) => { if (blob) resolve(blob); else reject(new Error('Gagal membuat PNG blob')); },
@@ -182,9 +275,13 @@ export async function generateCollageJpegDataURL(
   imageFiles: File[],
   customerName: string,
   index: number,
-  total: number
+  total: number,
+  useAI: boolean = true,
+  onPhotoProgress?: (current: number, total: number, status: string) => void
 ): Promise<string> {
-  const canvas = await buildCollageCanvas(imageFiles, customerName, index, total);
-  // toDataURL sinkronus dan cepat (hanya encoding base64), tidak memblok
-  return canvas.toDataURL('image/jpeg', 0.92);
+  // Pastikan kita menunggu buildCollageCanvas selesai sepenuhnya dengan parameter AI yang tepat
+  const canvas = await buildCollageCanvas(imageFiles, customerName, index, total, useAI, onPhotoProgress);
+  
+  // Menggunakan kualitas 0.95 (hampir lossless) agar koordinat Smart-Fit tetap presisi di PDF
+  return canvas.toDataURL('image/jpeg', 0.95);
 }

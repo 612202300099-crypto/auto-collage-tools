@@ -30,7 +30,8 @@ export interface SheetInput {
 export async function buildAndDownloadPDF(
   sheets: SheetInput[],
   customerName: string,
-  onProgress: (current: number, total: number, sheetName: string) => void
+  onProgress: (current: number, total: number, sheetName: string) => void,
+  useAI: boolean = true
 ): Promise<void> {
   if (sheets.length === 0) throw new Error('Tidak ada sheet untuk diekspor');
 
@@ -52,7 +53,11 @@ export async function buildAndDownloadPDF(
       sheet.files,
       customerName,
       sheet.sheetIndex,
-      sheet.totalSheets
+      sheet.totalSheets,
+      useAI,
+      (current, total, status) => {
+        onProgress(sheet.sheetIndex, sheets.length, `${sheet.name} > ${status}`);
+      }
     );
 
     // Halaman pertama sudah ada secara default di jsPDF
