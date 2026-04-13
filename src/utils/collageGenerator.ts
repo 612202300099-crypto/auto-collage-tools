@@ -218,22 +218,37 @@ async function buildCollageCanvas(
     }
   }
 
-  // Label "NAMA - P1/3" di ruang atas (~1cm)
-  const labelWidth  = Math.round(5 * PX_PER_CM);
-  const labelHeight = Math.round(MARGIN_Y * 0.6);
-  const labelX      = Math.round((CANVAS_WIDTH  - labelWidth)  / 2);
-  const labelY      = Math.round((MARGIN_Y - labelHeight) / 2);
-  const labelRadius = Math.round(labelHeight * 0.2);
+  // --- MENGGAMBAR LABEL DINAMIS (NAMA CUSTOMER) ---
+  const labelText = `${customerName.toUpperCase()} - P${index}/${total}`;
+  
+  // 1. Tentukan tinggi label dan ukuran font berdasarkan sisa ruang (MARGIN_Y)
+  // Kita buat tinggi label 70% dari sisa ruang agar lebih gagah
+  const labelHeight = Math.round(MARGIN_Y * 0.7);
+  const fontSize    = Math.round(labelHeight * 0.45);
+  
+  ctx.font = `bold ${fontSize}px sans-serif`;
+  
+  // 2. Hitung lebar teks asli untuk membuat wadah yang presisi
+  const textMetrics = ctx.measureText(labelText);
+  const textWidth   = textMetrics.width;
+  
+  // 3. Tambahkan padding (ruang napas) di kiri & kanan agar tidak sesak
+  const horizontalPadding = fontSize * 1.5; 
+  const labelWidth = textWidth + horizontalPadding;
+  
+  // 4. Hitung posisi agar pas di tengah (Center)
+  const labelX = Math.round((CANVAS_WIDTH - labelWidth) / 2);
+  const labelY = Math.round((MARGIN_Y - labelHeight) / 2);
+  const labelRadius = Math.round(labelHeight * 0.25);
 
+  // Gambar Wadah Hitam (Pill Shape)
   ctx.fillStyle = 'black';
   ctx.beginPath();
   ctx.roundRect(labelX, labelY, labelWidth, labelHeight, labelRadius);
   ctx.fill();
 
-  const labelText = `${customerName.toUpperCase()} - P${index}/${total}`;
-  const fontSize  = Math.round(labelHeight * 0.45);
+  // Gambar Teks Putih tepat di tengah wadah
   ctx.fillStyle    = 'white';
-  ctx.font         = `bold ${fontSize}px sans-serif`;
   ctx.textAlign    = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(labelText, labelX + labelWidth / 2, labelY + labelHeight / 2);
