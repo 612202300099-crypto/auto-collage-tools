@@ -31,7 +31,8 @@ export async function buildAndDownloadPDF(
   sheets: SheetInput[],
   customerName: string,
   onProgress: (current: number, total: number, sheetName: string) => void,
-  useAI: boolean = true
+  useAI: boolean = true,
+  tagColor?: string | null
 ): Promise<void> {
   if (sheets.length === 0) throw new Error('Tidak ada sheet untuk diekspor');
 
@@ -57,7 +58,8 @@ export async function buildAndDownloadPDF(
       useAI,
       (current, total, status) => {
         onProgress(sheet.sheetIndex, sheets.length, `${sheet.name} > ${status}`);
-      }
+      },
+      tagColor
     );
 
     // Halaman pertama sudah ada secara default di jsPDF
@@ -73,6 +75,6 @@ export async function buildAndDownloadPDF(
   }
 
   // Simpan & trigger download
-  const safeFileName = customerName.replace(/[^a-zA-Z0-9_\-]/g, '_');
-  pdf.save(`${safeFileName}_semua_halaman.pdf`);
+  const safeFileName = customerName.replace(/[^a-zA-Z0-9_\-]/g, ' ');
+  pdf.save(`${safeFileName} - Pages (Semua Halaman).pdf`);
 }

@@ -26,6 +26,59 @@ const RESIZE_MAX_DIM = 512;
 /** Kualitas kompresi JPEG sebelum dikirim (0.7 = cukup untuk deteksi wajah, file kecil). */
 const RESIZE_JPEG_QUALITY = 0.7;
 
+// ─── Internal Database (IndexedDB) ────────────────────────────────────────────
+
+const DB_NAME = 'AutoCollageCache';
+const DB_VERSION = 1;
+const STORE_NAME = 'face-detections';
+
+function initDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+const dbPromise = initDB();
+
+async function getCachedFace(key: string): Promise<FaceBBox | null> {
+  try {
+    const db = await dbPromise;
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readonly');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.get(key);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error);
+    });
+  } catch (err) {
+    console.warn('[DB] Failed to get from cache:', err);
+    return null;
+  }
+}
+
+async function setCachedFace(key: string, value: FaceBBox): Promise<void> {
+  try {
+    const db = await dbPromise;
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.put(value, key);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  } catch (err) {
+    console.warn('[DB] Failed to set cache:', err);
+  }
+}
+
 // ─── Fungsi Publik ────────────────────────────────────────────────────────────
 
 /**
@@ -38,11 +91,20 @@ const RESIZE_JPEG_QUALITY = 0.7;
  * @returns Bounding box grup wajah dalam koordinat [0-1000], atau null jika gagal/tidak ada wajah.
  */
 export async function detectFace(file: File): Promise<FaceBBox | null> {
+  const cacheKey = `${file.name}-${file.size}-${file.lastModified}`;
+  
   try {
-    // 1. Resize & konversi ke Base64 di sisi klien (hemat upload bandwidth)
+    // 0. Cek Cache Persisten (IndexedDB) — Hemat biaya!
+    const cached = await getCachedFace(cacheKey);
+    if (cached) {
+      console.log(`[AI] Cache Hit for ${file.name} (Using Smart-Memory)`);
+      return cached;
+    }
+
+    // 1. Resize & konversi ke Base64 di sisi klien
     const imageBase64 = await resizeAndConvertToBase64(file, RESIZE_MAX_DIM, RESIZE_JPEG_QUALITY);
 
-    // 2. Kirim ke Serverless Function kita (bukan langsung ke OpenAI)
+    // 2. Kirim ke Serverless Function
     const response = await fetch(DETECT_FACE_ENDPOINT, {
       method: 'POST',
       headers: {
@@ -53,22 +115,21 @@ export async function detectFace(file: File): Promise<FaceBBox | null> {
 
     if (!response.ok) {
       const errorData = await response.json() as { error?: string };
-      // Lempar error dengan pesan dari server agar bisa terlogging dengan konteks yang benar
       throw new Error(errorData?.error ?? `Server responded with status ${response.status}`);
     }
 
     const data = await response.json() as { face: [number, number, number, number] | null };
 
-    // Server sudah memvalidasi & membersihkan respons, kita tinggal pakai
     if (data.face) {
-      const { ymin, xmin, ymax, xmax } = data.face as unknown as FaceBBox;
-      return { ymin, xmin, ymax, xmax };
+      const result = data.face as unknown as FaceBBox;
+      // 3. Simpan ke Cache Persisten — Tidak akan scan ulang selamanya
+      await setCachedFace(cacheKey, result);
+      return result;
     }
 
     return null;
 
   } catch (err) {
-    // Gagal deteksi bukan error fatal — collage tetap dibuat dengan center-crop sebagai fallback
     console.warn('[AI] Face detection failed, falling back to center-crop:', err);
     return null;
   }

@@ -12,10 +12,13 @@ import {
   Settings,
   Activity,
   Info,
-  FileDown
+  FileDown,
+  Copy,
+  Eye,
+  X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { generateCollageLocal } from './utils/collageGenerator';
+import { generateCollageLocal, generateCollagePreview } from './utils/collageGenerator';
 import { buildAndDownloadPDF } from './utils/pdfExporter';
 import type { SheetInput } from './utils/pdfExporter';
 
@@ -25,6 +28,19 @@ interface LocalPackage {
   sheetIndex: number;
   totalSheets: number;
 }
+
+const VIBRANT_COLORS = [
+  '#EF4444', // Red
+  '#F59E0B', // Amber
+  '#10B981', // Emerald
+  '#3B82F6', // Blue
+  '#8B5CF6', // Violet
+  '#EC4899', // Pink
+  '#06B6D4', // Cyan
+  '#84CC16', // Lime
+  '#F97316', // Orange
+  '#0891B2', // Teal
+];
 
 export default function App() {
   const [customerName, setCustomerName] = useState('');
@@ -37,6 +53,10 @@ export default function App() {
   });
   const [exportFormat, setExportFormat] = useState<'png' | 'pdf'>('png');
   const [useAI, setUseAI] = useState(true);
+  const [previewPackage, setPreviewPackage] = useState<LocalPackage | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+  const [batchColor, setBatchColor] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFolderSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -84,21 +104,82 @@ export default function App() {
     setPackages(newPackages);
     setProgress({ current: 0, total: 0, log: [] });
   };
+  
+  const recalculateIndices = (pkgs: LocalPackage[]) => {
+    return pkgs.map((pkg, idx, arr) => ({
+      ...pkg,
+      sheetIndex: idx + 1,
+      totalSheets: arr.length
+    }));
+  };
 
+  const handleDuplicate = (index: number) => {
+    const pkgToDup = packages[index];
+    if (pkgToDup.files.length > 25) return; // safety although button hidden
 
+    const newPackages = [...packages];
+    const duplicate = { ...pkgToDup };
+    
+    // Insert right after the original
+    newPackages.splice(index + 1, 0, duplicate);
+    
+    setPackages(recalculateIndices(newPackages));
+    setProgress(prev => ({ ...prev, log: [`[SYSTEM] Duplicated ${pkgToDup.name}`, ...prev.log] }));
+  };
+
+  const handleDeletePackage = (index: number) => {
+    const newPackages = packages.filter((_, i) => i !== index);
+    setPackages(recalculateIndices(newPackages));
+  };
+
+  const showPreview = async (pkg: LocalPackage) => {
+    if (!customerName) {
+      alert('Tolong masukkan Nama Customer dulu untuk preview!');
+      return;
+    }
+    setPreviewPackage(pkg);
+    setIsPreviewLoading(true);
+    try {
+      const url = await generateCollagePreview(
+        pkg.files,
+        customerName,
+        pkg.sheetIndex,
+        pkg.totalSheets,
+        useAI,
+        batchColor || '#EF4444' // Gunakan batchColor if any, default to Red
+      );
+      setPreviewUrl(url);
+    } catch (err: any) {
+      alert('Gagal membuat preview: ' + err.message);
+      setPreviewPackage(null);
+    } finally {
+      setIsPreviewLoading(false);
+    }
+  };
+
+  const closePreview = () => {
+    setPreviewPackage(null);
+    setPreviewUrl(null);
+    setIsPreviewLoading(false);
+  };
 
   const startBatch = async () => {
     if (!customerName) {
       alert('Tolong masukkan Nama Customer!');
       return;
     }
+    
+    // Generate warna unik baru untuk setiap eksekusi
+    const randomColor = VIBRANT_COLORS[Math.floor(Math.random() * VIBRANT_COLORS.length)];
+    setBatchColor(randomColor);
 
     setIsProcessing(true);
+    setProgress(prev => ({ ...prev, log: [`[SYSTEM] Batch Tag Color: ${randomColor}`, ...prev.log] }));
 
     if (exportFormat === 'pdf') {
-      await runPDFBatch();
+      await runPDFBatch(randomColor);
     } else {
-      await runPNGBatch();
+      await runPNGBatch(randomColor);
     }
 
     setIsProcessing(false);
@@ -106,7 +187,7 @@ export default function App() {
   };
 
   // ── Mode PNG: render + download satu per satu ──────────────────────────────
-  const runPNGBatch = async () => {
+  const runPNGBatch = async (tagColor: string) => {
     setProgress({ current: 0, total: packages.length, log: [`[SYSTEM] Mode PNG (AI: ${useAI ? 'ON' : 'OFF'}) — mulai proses batch...`] });
 
     for (let i = 0; i < packages.length; i++) {
@@ -129,12 +210,14 @@ export default function App() {
               ...prev, 
               log: [`[${pkg.name}] ${status}`, ...prev.log.slice(0, 100)] // Limit log length for performance
             }));
-          }
+          },
+          tagColor
         );
         const url = window.URL.createObjectURL(blob);
         const a   = document.createElement('a');
         a.href     = url;
-        a.download = `${customerName}_Sheet_${pkg.sheetIndex}.png`;
+        const safeName = customerName.replace(/[^a-zA-Z0-9_\-]/g, ' ');
+        a.download = `${safeName} - Pages ${pkg.sheetIndex}_${pkg.totalSheets}.png`;
         document.body.appendChild(a);
         a.click();
         window.URL.revokeObjectURL(url);
@@ -147,7 +230,7 @@ export default function App() {
   };
 
   // ── Mode PDF: streaming — 1 sheet masuk PDF lalu langsung dibuang dari RAM ─
-  const runPDFBatch = async () => {
+  const runPDFBatch = async (tagColor: string) => {
     setProgress({ current: 0, total: packages.length, log: [`[SYSTEM] Mode PDF (AI: ${useAI ? 'ON' : 'OFF'}) — streaming satu sheet per satu...`] });
 
     const sheetInputs: SheetInput[] = packages.map(pkg => ({
@@ -168,7 +251,8 @@ export default function App() {
           log: [`[PDF] Sheet ${current}/${total} — ${sheetName}`, ...prev.log]
           }));
         },
-        useAI // Pastikan flag AI diteruskan ke fungsi PDF exporter
+        useAI, // Pastikan flag AI diteruskan ke fungsi PDF exporter
+        tagColor
       );
       setProgress(prev => ({
         ...prev,
@@ -322,7 +406,34 @@ export default function App() {
                           <p className="text-[9px] text-zinc-600 font-mono uppercase">{pkg.files.length} IMG • SHEET {pkg.sheetIndex}</p>
                         </div>
                       </div>
-                      <ChevronRight className="w-3 h-3 text-zinc-800 group-hover:text-zinc-500" />
+                      
+                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button 
+                          onClick={() => showPreview(pkg)}
+                          className="p-1.5 hover:bg-zinc-800 rounded text-zinc-500 hover:text-cyan-500 transition-colors"
+                          title="Preview Layout"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                        </button>
+
+                        {pkg.files.length <= 25 && (
+                          <button 
+                            onClick={() => handleDuplicate(idx)}
+                            className="p-1.5 hover:bg-zinc-800 rounded text-zinc-500 hover:text-yellow-500 transition-colors"
+                            title="Duplicate Sheet"
+                          >
+                            <Copy className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+
+                        <button 
+                          onClick={() => handleDeletePackage(idx)}
+                          className="p-1.5 hover:bg-zinc-800 rounded text-zinc-500 hover:text-red-500 transition-colors"
+                          title="Delete"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </motion.div>
                   ))}
                 </div>
@@ -430,6 +541,58 @@ export default function App() {
           </AnimatePresence>
         </main>
       </div>
+
+      {/* Preview Modal */}
+      <AnimatePresence>
+        {previewPackage && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-sm"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="relative bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden shadow-2xl max-w-2xl w-full"
+            >
+              <div className="p-4 border-b border-zinc-800 flex items-center justify-between bg-black/40">
+                <div>
+                  <h3 className="text-sm font-bold uppercase tracking-tight">{previewPackage.name}</h3>
+                  <p className="text-[10px] text-zinc-500 font-mono uppercase">Previewing Layout • Sheet {previewPackage.sheetIndex}/{previewPackage.totalSheets}</p>
+                </div>
+                <button 
+                  onClick={closePreview}
+                  className="p-2 hover:bg-zinc-800 rounded-full transition-colors text-zinc-500 hover:text-white"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-6 flex items-center justify-center bg-[#0a0a0b] aspect-[31/47] max-h-[70vh] overflow-hidden">
+                {isPreviewLoading ? (
+                  <div className="flex flex-col items-center gap-4 text-zinc-600">
+                    <Loader2 className="w-8 h-8 animate-spin" />
+                    <p className="text-[10px] font-mono uppercase tracking-widest">Generating Digital Proof...</p>
+                  </div>
+                ) : previewUrl ? (
+                  <img src={previewUrl} alt="Collage Preview" className="max-w-full max-h-full object-contain shadow-2xl border border-zinc-800" />
+                ) : null}
+              </div>
+
+              <div className="p-4 border-t border-zinc-800 bg-black/40 flex justify-end">
+                <button 
+                  onClick={closePreview}
+                  className="px-6 py-2 bg-zinc-800 hover:bg-zinc-700 text-xs font-bold uppercase rounded transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
