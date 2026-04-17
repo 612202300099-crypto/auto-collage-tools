@@ -29,17 +29,14 @@ interface LocalPackage {
   totalSheets: number;
 }
 
-const VIBRANT_COLORS = [
-  '#EF4444', // Red
-  '#F59E0B', // Amber
-  '#10B981', // Emerald
-  '#3B82F6', // Blue
-  '#8B5CF6', // Violet
-  '#EC4899', // Pink
-  '#06B6D4', // Cyan
-  '#84CC16', // Lime
-  '#F97316', // Orange
-  '#0891B2', // Teal
+const MEJIKUHIBINIU = [
+  '#FF0000', // Merah
+  '#FF7F00', // Jingga
+  '#FFFF00', // Kuning
+  '#22C55E', // Hijau
+  '#3B82F6', // Biru
+  '#4B0082', // Nila
+  '#A855F7', // Ungu
 ];
 
 export default function App() {
@@ -144,7 +141,7 @@ export default function App() {
         customerName,
         pkg.sheetIndex,
         pkg.totalSheets,
-        batchColor || '#EF4444' // Gunakan batchColor if any, default to Red
+        batchColor || MEJIKUHIBINIU[(parseInt(localStorage.getItem('collageTagIndex') || '6') + 1) % MEJIKUHIBINIU.length]
       );
       setPreviewUrl(url);
     } catch (err: any) {
@@ -167,17 +164,21 @@ export default function App() {
       return;
     }
     
-    // Generate warna unik baru untuk setiap eksekusi
-    const randomColor = VIBRANT_COLORS[Math.floor(Math.random() * VIBRANT_COLORS.length)];
-    setBatchColor(randomColor);
+    // Looping warna MEJIKUHIBINIU secara berurutan
+    const lastIndex = parseInt(localStorage.getItem('collageTagIndex') || '-1');
+    const nextIndex = (lastIndex + 1) % MEJIKUHIBINIU.length;
+    localStorage.setItem('collageTagIndex', nextIndex.toString());
+    
+    const nextColor = MEJIKUHIBINIU[nextIndex];
+    setBatchColor(nextColor);
 
     setIsProcessing(true);
-    setProgress(prev => ({ ...prev, log: [`[SYSTEM] Batch Tag Color: ${randomColor}`, ...prev.log] }));
+    setProgress(prev => ({ ...prev, log: [`[SYSTEM] Batch Tag Color: ${nextColor}`, ...prev.log] }));
 
     if (exportFormat === 'pdf') {
-      await runPDFBatch(randomColor);
+      await runPDFBatch(nextColor);
     } else {
-      await runPNGBatch(randomColor);
+      await runPNGBatch(nextColor);
     }
 
     setIsProcessing(false);
