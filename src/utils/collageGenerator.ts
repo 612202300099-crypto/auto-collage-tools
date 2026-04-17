@@ -1,5 +1,4 @@
 import { yieldToMain } from './yieldToMain';
-import { detectFace } from './aiService';
 
 // ─────────────────────────────────────────────────────────────────
 // INTERNAL: build + draw canvas — dipakai oleh kedua export di bawah
@@ -9,7 +8,6 @@ async function buildCollageCanvas(
   customerName: string,
   index: number,
   total: number,
-  useAI: boolean = true,
   onPhotoProgress?: (current: number, total: number, status: string) => void,
   customPxPerCm?: number,
   tagColor?: string | null
@@ -104,41 +102,12 @@ async function buildCollageCanvas(
     const photoAreaW = PHOTO_WIDTH - FRAME_PADDING * 2;
     const photoAreaH = PHOTO_HEIGHT - FRAME_PADDING - FRAME_BOTTOM_PADDING;
 
-    // --- ULTRA-SMART ADAPTIVE SCALING (AI) ---
-    const currentFile = imageFiles[i % imageFiles.length];
+    // --- CENTER-CROP SCALING ---
+    // Default Cover Scale (center-crop sederhana, cepat, tanpa dependensi AI)
+    const scale = Math.max(photoAreaW / img.naturalWidth, photoAreaH / img.naturalHeight);
+    const focalX = img.naturalWidth / 2;
+    const focalY = img.naturalHeight / 2;
 
-    // Default Cover Scale
-    let scale = Math.max(photoAreaW / img.naturalWidth, photoAreaH / img.naturalHeight);
-    let focalX = img.naturalWidth / 2;
-    let focalY = img.naturalHeight / 2;
-
-    if (useAI) {
-      onPhotoProgress?.(i + 1, 25, `AI Smart-Fit Analysis for ${currentFile.name}...`);
-      const face = await detectFace(currentFile);
-
-      if (face) {
-        const fx = (face.xmin / 1000) * img.naturalWidth;
-        const fy = (face.ymin / 1000) * img.naturalHeight;
-        const fw = ((face.xmax - face.xmin) / 1000) * img.naturalWidth;
-        const fh = ((face.ymax - face.ymin) / 1000) * img.naturalHeight;
-
-        // "Kecilin Otomatis" jika wajah tidak muat di crop standar
-        const requiredScaleW = photoAreaW / fw;
-        const requiredScaleH = photoAreaH / fh;
-
-        // Pilih scale yang paling "aman" agar wajah tidak terpotong
-        const smartScale = Math.min(requiredScaleW, requiredScaleH, scale);
-        scale = smartScale;
-
-        // Pusatkan pada tengah-tengah grup wajah
-        focalX = fx + fw / 2;
-        focalY = fy + fh / 2;
-
-        onPhotoProgress?.(i + 1, 25, `AI Smart-Fit applied`);
-      }
-    }
-    // ------------------------------------------
- 
     // Logika Penggambaran Destination (Bebas Glitch Koordinat Negatif)
     const drawW = img.naturalWidth * scale;
     const drawH = img.naturalHeight * scale;
@@ -271,11 +240,10 @@ export async function generateCollageLocal(
   customerName: string,
   index: number,
   total: number,
-  useAI: boolean = true,
   onPhotoProgress?: (current: number, total: number, status: string) => void,
   tagColor?: string | null
 ): Promise<Blob> {
-  const canvas = await buildCollageCanvas(imageFiles, customerName, index, total, useAI, onPhotoProgress, undefined, tagColor);
+  const canvas = await buildCollageCanvas(imageFiles, customerName, index, total, onPhotoProgress, undefined, tagColor);
   return new Promise((resolve, reject) => {
     canvas.toBlob(
       (blob) => { if (blob) resolve(blob); else reject(new Error('Gagal membuat PNG blob')); },
@@ -299,12 +267,10 @@ export async function generateCollageJpegDataURL(
   customerName: string,
   index: number,
   total: number,
-  useAI: boolean = true,
   onPhotoProgress?: (current: number, total: number, status: string) => void,
   tagColor?: string | null
 ): Promise<string> {
-  // Pastikan kita menunggu buildCollageCanvas selesai sepenuhnya dengan parameter AI yang tepat
-  const canvas = await buildCollageCanvas(imageFiles, customerName, index, total, useAI, onPhotoProgress, undefined, tagColor);
+  const canvas = await buildCollageCanvas(imageFiles, customerName, index, total, onPhotoProgress, undefined, tagColor);
 
   // Menggunakan kualitas 0.95 (hampir lossless) agar koordinat Smart-Fit tetap presisi di PDF
   return canvas.toDataURL('image/jpeg', 0.95);
@@ -318,10 +284,9 @@ export async function generateCollagePreview(
   customerName: string,
   index: number,
   total: number,
-  useAI: boolean = true,
   tagColor?: string | null
 ): Promise<string> {
   // Gunakan 40 PX_PER_CM (~100 DPI) agar cepat untuk preview
-  const canvas = await buildCollageCanvas(imageFiles, customerName, index, total, useAI, undefined, 40, tagColor);
+  const canvas = await buildCollageCanvas(imageFiles, customerName, index, total, undefined, 40, tagColor);
   return canvas.toDataURL('image/jpeg', 0.7);
 }
