@@ -31,6 +31,7 @@ export async function buildAndDownloadPDF(
   sheets: SheetInput[],
   customerName: string,
   onProgress: (current: number, total: number, sheetName: string) => void,
+  useAI: boolean = false,
   tagColor?: string | null
 ): Promise<void> {
   if (sheets.length === 0) throw new Error('Tidak ada sheet untuk diekspor');
@@ -54,6 +55,7 @@ export async function buildAndDownloadPDF(
       customerName,
       sheet.sheetIndex,
       sheet.totalSheets,
+      useAI,
       (current, total, status) => {
         onProgress(sheet.sheetIndex, sheets.length, `${sheet.name} > ${status}`);
       },

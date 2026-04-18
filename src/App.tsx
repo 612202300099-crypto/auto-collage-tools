@@ -49,6 +49,7 @@ export default function App() {
     log: []
   });
   const [exportFormat, setExportFormat] = useState<'png' | 'pdf'>('png');
+  const [useAI, setUseAI] = useState(false);
   const [previewPackage, setPreviewPackage] = useState<LocalPackage | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
@@ -141,6 +142,7 @@ export default function App() {
         customerName,
         pkg.sheetIndex,
         pkg.totalSheets,
+        useAI,
         batchColor || MEJIKUHIBINIU[(parseInt(localStorage.getItem('collageTagIndex') || '6') + 1) % MEJIKUHIBINIU.length]
       );
       setPreviewUrl(url);
@@ -187,7 +189,7 @@ export default function App() {
 
   // ── Mode PNG: render + download satu per satu ──────────────────────────────
   const runPNGBatch = async (tagColor: string) => {
-    setProgress({ current: 0, total: packages.length, log: ['[SYSTEM] Mode PNG — mulai proses batch...'] });
+    setProgress({ current: 0, total: packages.length, log: [`[SYSTEM] Mode PNG (AI: ${useAI ? 'ON' : 'OFF'}) — mulai proses batch...`] });
 
     for (let i = 0; i < packages.length; i++) {
       const pkg = packages[i];
@@ -203,6 +205,7 @@ export default function App() {
           customerName,
           pkg.sheetIndex,
           pkg.totalSheets,
+          useAI,
           (idx, tot, status) => {
             setProgress(prev => ({ 
               ...prev, 
@@ -229,7 +232,7 @@ export default function App() {
 
   // ── Mode PDF: streaming — 1 sheet masuk PDF lalu langsung dibuang dari RAM ─
   const runPDFBatch = async (tagColor: string) => {
-    setProgress({ current: 0, total: packages.length, log: ['[SYSTEM] Mode PDF — streaming satu sheet per satu...'] });
+    setProgress({ current: 0, total: packages.length, log: [`[SYSTEM] Mode PDF (AI: ${useAI ? 'ON' : 'OFF'}) — streaming satu sheet per satu...`] });
 
     const sheetInputs: SheetInput[] = packages.map(pkg => ({
       files:       pkg.files.slice(0, 25),
@@ -249,6 +252,7 @@ export default function App() {
           log: [`[PDF] Sheet ${current}/${total} — ${sheetName}`, ...prev.log]
           }));
         },
+        useAI,
         tagColor
       );
       setProgress(prev => ({
@@ -349,6 +353,23 @@ export default function App() {
                   <span className="text-xs font-bold text-zinc-300">{val}</span>
                 </div>
               ))}
+            </div>
+
+            <div className="space-y-4 pt-4 border-t border-zinc-900">
+              <div className="flex items-center justify-between">
+                <label className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest flex items-center gap-2">
+                  <Activity className={`w-3 h-3 ${useAI ? 'text-cyan-500' : 'text-zinc-700'}`} /> AI Smart Face Detection
+                </label>
+                <div 
+                  onClick={() => !isProcessing && setUseAI(!useAI)}
+                  className={`w-10 h-5 rounded-full p-1 cursor-pointer transition-colors ${useAI ? 'bg-cyan-600' : 'bg-zinc-800'} ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  <div className={`w-3 h-3 bg-white rounded-full transition-transform ${useAI ? 'translate-x-5' : 'translate-x-0'}`} />
+                </div>
+              </div>
+              <p className="text-[9px] text-zinc-600 font-mono leading-relaxed">
+                Mendeteksi wajah menggunakan OpenAI Vision untuk mencegah wajah terpotong (Smart Cropping).
+              </p>
             </div>
           </div>
         </aside>
