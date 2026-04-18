@@ -13,7 +13,7 @@ interface FaceResult {
 // ── SETUP INDEXEDDB ────────────────────────────────────────────────────────
 const DB_NAME = 'AutoCollageCache';
 const STORE_NAME = 'FaceDetection';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
