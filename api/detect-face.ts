@@ -1,8 +1,8 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { VercelRequest, VercelResponse } from '@vercel/node';
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+  apiKey: process.env.OPENAI_API_KEY || '',
 });
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -10,10 +10,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  try {
-    const { image } = req.body;
-    if (!image) return res.status(400).json({ error: 'Missing image' });
+  const { image } = req.body;
+  if (!image) {
+    return res.status(400).json({ error: 'Image is required' });
+  }
 
+  try {
+    // 1. Kirim ke OpenAI GPT-4o-mini (Visi yang sangat cerdas & terjangkau)
+    // Gunakan prompt yang sangat spesifik agar outputnya hanya JSON
     const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
@@ -22,25 +26,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           content: [
             { 
               type: "text", 
-              text: "You are a professional photographer's assistant. Detect all human faces in this image and return the bounding box coordinates (xmin, ymin, xmax, ymax) on a scale of 0-1000. If multiple faces, return a box that covers ALL faces. Return ONLY JSON format: {\"xmin\": 0, \"ymin\": 0, \"xmax\": 0, \"ymax\": 0}. If no face, return null." 
+              text: "Return the bounding box of the main face in this image as JSON: { \"xmin\": number, \"ymin\": number, \"xmax\": number, \"ymax\": number }. Scale: 0-1000. Only return the JSON object." 
             },
             {
               type: "image_url",
-              image_url: { url: image, detail: "low" },
-            },
-          ],
-        },
+              image_url: {
+                url: image, // Base64 data:image/jpeg;base64,...
+                detail: "low" // Gunakan low detail agar super cepat & hemat token/biaya
+              }
+            }
+          ]
+        }
       ],
       response_format: { type: "json_object" },
       max_tokens: 100,
     });
 
     const content = response.choices[0].message.content;
-    const result = content ? JSON.parse(content) : null;
+    if (!content) throw new Error('No response from AI');
 
-    return res.status(200).json(result);
-  } catch (error: any) {
-    console.error('AI Error:', error);
-    return res.status(500).json({ error: error.message });
+    const result = JSON.parse(content);
+
+    // 2. Return ke Client
+    return res.status(200).json({
+      xmin: result.xmin ?? 0,
+      ymin: result.ymin ?? 0,
+      xmax: result.xmax ?? 1000,
+      ymax: result.ymax ?? 1000
+    });
+
+  } catch (err: any) {
+    console.error('OpenAI Detection Error:', err);
+    return res.status(500).json({ 
+      error: 'AI Detection failed', 
+      details: err.message 
+    });
   }
 }

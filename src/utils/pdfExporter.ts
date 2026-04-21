@@ -1,6 +1,7 @@
 import jsPDF from 'jspdf';
 import { yieldToMain } from './yieldToMain';
 import { generateCollageJpegDataURL } from './collageGenerator';
+import type { AIEngine } from './aiService';
 
 // Ukuran kertas dalam cm (konsisten dengan collageGenerator.ts)
 const PAGE_WIDTH_CM  = 31;
@@ -15,23 +16,12 @@ export interface SheetInput {
 
 /**
  * buildAndDownloadPDF — Streaming PDF generator.
- *
- * ARSITEKTUR KUNCI (anti-crash):
- * Setiap sheet diproses SATU PER SATU:
- *   generate JPEG → masuk PDF → dataURL langsung dibuang → lanjut sheet berikutnya
- *
- * Tidak ada akumulasi blob/dataURL di RAM.
- * Menggunakan JPEG (bukan PNG) → 5-10x lebih kecil → tidak habiskan RAM.
- *
- * @param sheets       - Array data sheet yang akan diproses
- * @param customerName - Nama customer (untuk nama file)
- * @param onProgress   - Callback laporan progress per sheet
  */
 export async function buildAndDownloadPDF(
   sheets: SheetInput[],
   customerName: string,
   onProgress: (current: number, total: number, sheetName: string) => void,
-  useAI: boolean = false,
+  aiEngine: AIEngine | null = null,
   tagColor?: string | null
 ): Promise<void> {
   if (sheets.length === 0) throw new Error('Tidak ada sheet untuk diekspor');
@@ -48,33 +38,28 @@ export async function buildAndDownloadPDF(
 
     onProgress(i + 1, sheets.length, sheet.name);
 
-    // Generate JPEG DataURL langsung — TIDAK melalui Blob → FileReader
-    // JPEG 0.92 quality: kualitas cetak sangat baik, ukuran 5-10x lebih kecil dari PNG
+    // Generate JPEG DataURL langsung
     const dataUrl = await generateCollageJpegDataURL(
       sheet.files,
       customerName,
       sheet.sheetIndex,
       sheet.totalSheets,
-      useAI,
+      aiEngine,
       (current, total, status) => {
         onProgress(sheet.sheetIndex, sheets.length, `${sheet.name} > ${status}`);
       },
       tagColor
     );
 
-    // Halaman pertama sudah ada secara default di jsPDF
     if (i > 0) {
       pdf.addPage([PAGE_WIDTH_CM, PAGE_HEIGHT_CM], 'portrait');
     }
 
-    // Embed JPEG — setelah baris ini, dataUrl boleh di-GC (garbage collected)
     pdf.addImage(dataUrl, 'JPEG', 0, 0, PAGE_WIDTH_CM, PAGE_HEIGHT_CM);
 
-    // Yield agar browser napas setelah addImage (operasi encoding berat)
     await yieldToMain();
   }
 
-  // Simpan & trigger download
   const safeFileName = customerName.replace(/[^a-zA-Z0-9_\-]/g, ' ');
   pdf.save(`${safeFileName} - Pages (Semua Halaman).pdf`);
 }
