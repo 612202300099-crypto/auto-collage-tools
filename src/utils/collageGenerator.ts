@@ -148,7 +148,7 @@ async function buildCollageCanvas(
     ctx.restore();
 
     if (tagColor) {
-      const tagSize = Math.round(photoAreaW * 0.08);
+      const tagSize = Math.round(photoAreaW * 0.04);
       ctx.fillStyle = tagColor;
       ctx.beginPath();
       ctx.moveTo(photoAreaX, photoAreaY);

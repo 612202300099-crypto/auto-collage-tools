@@ -1,30 +1,27 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
 import { 
   FolderSearch, 
   Users, 
   Play, 
-  CheckCircle2, 
   Loader2, 
   LayoutGrid,
-  ChevronRight,
   Trash2,
   FileImage,
-  Settings,
   Activity,
   Info,
-  FileDown,
   Copy,
   Eye,
   X,
   Zap,
-  ShieldCheck,
-  Star
+  Star,
+  Palette
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { generateCollageLocal, generateCollagePreview } from './utils/collageGenerator';
 import { buildAndDownloadPDF } from './utils/pdfExporter';
 import type { SheetInput } from './utils/pdfExporter';
 import type { AIEngine } from './utils/aiService';
+import { generateRandomBatchColor } from './utils/colorUtils';
 
 interface LocalPackage {
   name: string;
@@ -32,16 +29,6 @@ interface LocalPackage {
   sheetIndex: number;
   totalSheets: number;
 }
-
-const MEJIKUHIBINIU = [
-  '#FF0000', // Merah
-  '#FF7F00', // Jingga
-  '#FFFF00', // Kuning
-  '#22C55E', // Hijau
-  '#3B82F6', // Biru
-  '#4B0082', // Nila
-  '#A855F7', // Ungu
-];
 
 export default function App() {
   const [customerName, setCustomerName] = useState('');
@@ -53,7 +40,7 @@ export default function App() {
     log: []
   });
   const [exportFormat, setExportFormat] = useState<'png' | 'pdf'>('pdf');
-  const [aiEngine, setAiEngine] = useState<AIEngine | 'none'>('local'); // Default ke Local (Gratis & Cepat)
+  const [aiEngine, setAiEngine] = useState<AIEngine | 'none'>('local');
   const [previewPackage, setPreviewPackage] = useState<LocalPackage | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
@@ -136,7 +123,7 @@ export default function App() {
         pkg.sheetIndex,
         pkg.totalSheets,
         aiEngine === 'none' ? null : aiEngine,
-        null
+        batchColor // Tampilkan warna batch agar preview akurat
       );
       setPreviewUrl(url);
     } catch (err: any) {
@@ -159,11 +146,8 @@ export default function App() {
       return;
     }
     
-    const lastIndex = parseInt(localStorage.getItem('collageTagIndex') || '-1');
-    const nextIndex = (lastIndex + 1) % MEJIKUHIBINIU.length;
-    localStorage.setItem('collageTagIndex', nextIndex.toString());
-    
-    const nextColor = MEJIKUHIBINIU[nextIndex];
+    // Generate warna acak total setiap kali batch di-eksekusi (Best Practice)
+    const nextColor = generateRandomBatchColor();
     setBatchColor(nextColor);
 
     setIsProcessing(true);
@@ -171,15 +155,16 @@ export default function App() {
       ...prev, 
       log: [
         `[SYSTEM] Starting Batch Analysis...`,
+        `[SYSTEM] Batch Color: ${nextColor}`,
         `[SYSTEM] AI Engine: ${aiEngine.toUpperCase()}`,
         ...prev.log
       ] 
     }));
 
     if (exportFormat === 'pdf') {
-      await runPDFBatch(null);
+      await runPDFBatch(nextColor);
     } else {
-      await runPNGBatch(null); 
+      await runPNGBatch(nextColor); 
     }
 
     setIsProcessing(false);
@@ -292,39 +277,49 @@ export default function App() {
             </div>
           </div>
 
-          {/* New Hybrid AI Engine Selector */}
-          <div className="hardware-card p-6 border border-zinc-800 bg-black/20">
-            <div className="flex items-center gap-2 text-[10px] font-mono text-zinc-500 uppercase tracking-widest mb-6">
-              <Zap className="w-3 h-3 text-cyan-500" /> AI Engine Configuration
-            </div>
-            
-            <div className="space-y-3">
-              {[
-                { id: 'none', label: 'OFF', desc: 'No Face Detection', icon: <X className="w-3 h-3" /> },
-                { id: 'local', label: 'STANDARD', desc: 'FREE / Fast / GPU Local', icon: <Zap className="w-3 h-3" />, color: 'text-yellow-500' },
-                { id: 'openai', label: 'PREMIUM', desc: 'PAID / Smart / OpenAI', icon: <Star className="w-4 h-4" />, color: 'text-cyan-500' },
-              ].map((engine) => (
-                <button
-                  key={engine.id}
-                  onClick={() => setAiEngine(engine.id as any)}
-                  className={`w-full text-left p-3 rounded-lg border transition-all flex items-center gap-4 ${
-                    aiEngine === engine.id 
-                      ? 'bg-zinc-800 border-zinc-600 shadow-lg' 
-                      : 'bg-black/40 border-zinc-900 hover:border-zinc-700 opacity-60'
-                  }`}
-                >
-                  <div className={`p-2 rounded bg-black/40 ${aiEngine === engine.id ? engine.color : 'text-zinc-700'}`}>
-                    {engine.icon}
+          {/* AI Engine & Batch Configuration */}
+          <div className="hardware-card p-6 border border-zinc-800 bg-black/20 space-y-6">
+            <div>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2 text-[10px] font-mono text-zinc-500 uppercase tracking-widest">
+                  <Zap className="w-3 h-3 text-cyan-500" /> AI Engine
+                </div>
+                {batchColor && (
+                  <div className="flex items-center gap-2 px-2 py-0.5 rounded-full bg-black text-[9px] font-mono border border-zinc-800">
+                    <Palette className="w-3 h-3" style={{ color: batchColor }} />
+                    <span className="uppercase text-zinc-400">Current Batch</span>
                   </div>
-                  <div>
-                    <p className="text-[10px] font-black uppercase tracking-tight">{engine.label}</p>
-                    <p className="text-[9px] text-zinc-600 font-mono italic">{engine.desc}</p>
-                  </div>
-                </button>
-              ))}
+                )}
+              </div>
+              
+              <div className="space-y-2">
+                {[
+                  { id: 'none', label: 'OFF', desc: 'No Face Detection', icon: <X className="w-3 h-3" /> },
+                  { id: 'local', label: 'STANDARD', desc: 'FREE / Fast / GPU Local', icon: <Zap className="w-3 h-3" />, color: 'text-yellow-500' },
+                  { id: 'openai', label: 'PREMIUM', desc: 'PAID / Smart / OpenAI', icon: <Star className="w-4 h-4" />, color: 'text-cyan-500' },
+                ].map((engine) => (
+                  <button
+                    key={engine.id}
+                    onClick={() => setAiEngine(engine.id as any)}
+                    className={`w-full text-left p-2.5 rounded-lg border transition-all flex items-center gap-3 ${
+                      aiEngine === engine.id 
+                        ? 'bg-zinc-800 border-zinc-600' 
+                        : 'bg-black/40 border-zinc-900 opacity-60 hover:opacity-100'
+                    }`}
+                  >
+                    <div className={`p-1.5 rounded bg-black/40 ${aiEngine === engine.id ? engine.color : 'text-zinc-700'}`}>
+                      {engine.icon}
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-tight">{engine.label}</p>
+                      <p className="text-[8px] text-zinc-600 font-mono italic">{engine.desc}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
             </div>
 
-            <div className="mt-6 p-3 rounded bg-cyan-500/5 border border-cyan-500/10">
+            <div className="p-3 rounded bg-cyan-500/5 border border-cyan-500/10">
                <p className="text-[9px] text-cyan-500/70 font-mono leading-relaxed flex items-center gap-2">
                   <Info className="w-3 h-3" />
                   {aiEngine === 'openai' 
@@ -379,9 +374,17 @@ export default function App() {
                   <button key={fmt} onClick={() => setExportFormat(fmt)} disabled={isProcessing} className={`py-2.5 rounded text-xs font-mono font-bold uppercase border ${exportFormat === fmt ? 'bg-yellow-500 text-black shadow-[0_0_15px_rgba(234,179,8,0.3)]' : 'bg-black/30 border-zinc-800 text-zinc-500'}`}>{fmt.toUpperCase()}</button>
                 ))}
               </div>
-              <button onClick={startBatch} disabled={isProcessing || packages.length === 0} className="w-full bg-yellow-500 hover:bg-yellow-400 disabled:bg-zinc-900 disabled:text-zinc-700 text-black font-black py-4 rounded uppercase tracking-tighter transition-all flex items-center justify-center gap-3">
+              <button 
+                onClick={startBatch} 
+                disabled={isProcessing || packages.length === 0} 
+                className="w-full relative group overflow-hidden bg-yellow-500 hover:bg-yellow-400 disabled:bg-zinc-900 disabled:text-zinc-700 text-black font-black py-4 rounded uppercase tracking-tighter transition-all flex items-center justify-center gap-3"
+              >
+                {/* Visual Indicator of Batch Color on Button during processing */}
+                {isProcessing && batchColor && (
+                  <div className="absolute inset-0 opacity-10 animate-pulse" style={{ backgroundColor: batchColor }} />
+                )}
                 {isProcessing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Play className="w-5 h-5 fill-current" />}
-                {isProcessing ? 'Processing...' : `Execute ${aiEngine.toUpperCase()} Flow`}
+                {isProcessing ? 'Processing Batch...' : `Execute Flow (${exportFormat.toUpperCase()})`}
               </button>
             </div>
           </div>
@@ -390,7 +393,10 @@ export default function App() {
             {(isProcessing || progress.log.length > 0) && (
               <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="hardware-card overflow-hidden">
                 <div className="p-3 border-b border-zinc-800 bg-black/40 flex items-center justify-between text-[10px] font-mono uppercase tracking-widest text-zinc-500">
-                  <div>System Log | Engine: {aiEngine.toUpperCase()}</div>
+                  <div className="flex items-center gap-2">
+                    <Palette className="w-3 h-3" style={{ color: batchColor || 'currentColor' }} />
+                    System Log | Engine: {aiEngine.toUpperCase()}
+                  </div>
                   <div>{progress.current} / {progress.total}</div>
                 </div>
                 <div className="p-4 h-32 overflow-y-auto font-mono text-[9px] space-y-1 custom-scrollbar bg-black/60">
