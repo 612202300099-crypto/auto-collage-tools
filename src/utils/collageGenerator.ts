@@ -1,5 +1,6 @@
 import { yieldToMain } from './yieldToMain';
 import { detectFace, AIEngine } from './aiService';
+import heic2any from 'heic2any';
 
 // ─────────────────────────────────────────────────────────────────
 // INTERNAL: build + draw canvas — dipakai oleh kedua export di bawah
@@ -46,14 +47,24 @@ async function buildCollageCanvas(
   ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
   // Helper: load File → HTMLImageElement
-  const loadImage = (file: File): Promise<HTMLImageElement> =>
-    new Promise((resolve, reject) => {
+  const loadImage = async (file: File): Promise<HTMLImageElement> => {
+    let blobToLoad: Blob = file;
+    if (file.name.toLowerCase().match(/\.(heic|heif)$/i)) {
+      try {
+        const converted = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 });
+        blobToLoad = Array.isArray(converted) ? converted[0] : converted;
+      } catch (e) {
+        console.error(`Gagal dekode HEIC untuk ${file.name}`, e);
+      }
+    }
+    return new Promise((resolve, reject) => {
       const img = new Image();
-      const url = URL.createObjectURL(file);
+      const url = URL.createObjectURL(blobToLoad);
       img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
       img.onerror = () => { URL.revokeObjectURL(url); reject(new Error(`Gagal memuat ${file.name}`)); };
       img.src = url;
     });
+  };
 
   // Load gambar
   const imgElements: HTMLImageElement[] = [];
@@ -144,7 +155,11 @@ async function buildCollageCanvas(
     ctx.beginPath();
     ctx.rect(photoAreaX, photoAreaY, photoAreaW, photoAreaH);
     ctx.clip();
+    
+    // Auto-Enhancement (Brightness, Saturation, Contrast)
+    ctx.filter = 'brightness(1.05) saturate(1.2) contrast(1.1)';
     ctx.drawImage(img, destX, destY, drawW, drawH);
+    
     ctx.restore();
 
     if (tagColor) {

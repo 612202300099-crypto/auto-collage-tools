@@ -54,7 +54,8 @@ export default function App() {
     const groups: { [key: string]: File[] } = {};
     
     files.forEach((file: any) => {
-      if (!file.type.startsWith('image/')) return;
+      const isImage = file.type.startsWith('image/') || file.name.toLowerCase().match(/\.(heic|heif|webp|jpg|jpeg|png)$/i);
+      if (!isImage) return;
       const pathParts = (file as any).webkitRelativePath.split('/');
       const folderName = pathParts.length >= 2 ? pathParts[pathParts.length - 2] : 'Main Folder';
       if (!groups[folderName]) groups[folderName] = [];
