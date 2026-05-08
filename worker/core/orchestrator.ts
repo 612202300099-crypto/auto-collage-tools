@@ -1,46 +1,33 @@
 /**
  * orchestrator.ts — Main automation loop for the Worker.
  *
- * This is the brain of the system. It coordinates:
+ * Multi-shop architecture:
+ * 1. For each configured shop, find the POLAROID folder in Drive
+ * 2. Scan order subfolders (e.g., "JX9171527480_25 Pcs")
+ * 3. Validate against the shop's spreadsheet
+ * 4. Download → Generate PDF → Upload to secondary Drive → Mark as BOT
  *
- * ── PHASE 1 (Priority): DD-MM-YYYY Folders ──
- * 1. Scan folders formatted DD-MM-YYYY (e.g., "25-04-2026")
- * 2. Process subfolders that already have resi names (JX****_100 Pcs)
- * 3. Validate → Download → Generate PDF → Upload → Mark "done" in Col K
- *
- * ── PHASE 2 (Migration): YYYY-MM-DD Folders ──
- * 4. Scan folders formatted YYYY-MM-DD (e.g., "2026-04-24")
- * 5. For each subfolder, lookup resi from EKSPORT sheet (Col AP)
- * 6. Move subfolder to corresponding DD-MM-YYYY folder
- * 7. Rename subfolder to "JX****_variant Pcs"
- * 8. The moved folder will be processed in the NEXT scan cycle (Phase 1)
- *
- * All with multi-layer anti-duplicate protection.
+ * No date folders — hierarchy is: Root → Shop → POLAROID → Order → Photos
  */
 import fs from 'fs';
 import path from 'path';
 import { logger } from '../utils/logger.ts';
-import {
-  parseFolderName,
-  buildOutputFileName,
-  classifyDateFolders,
-  convertYyyyMmDdToDdMmYyyy,
-  convertDdMmYyyyToYyyyMmDd,
-  buildOrderFolderName,
-  extractVariantFromText,
-} from '../utils/folderParser.ts';
-import { generateRandomBatchColor } from './colorUtils';
+import { parseFolderName, buildOutputFileName } from '../utils/folderParser.ts';
+import { generateRandomBatchColor } from './colorUtils.ts';
 import * as driveService from '../services/driveService.ts';
 import * as sheetsService from '../services/sheetsService.ts';
 import { generatePDF } from '../engine/pdfEngine.ts';
 import { WorkerPool } from './workerPool.ts';
 import * as state from './stateManager.ts';
-import type { WorkerConfig, ParsedOrder, ClassifiedDateFolder } from '../types.ts';
+import type { WorkerConfig, ResolvedShop, ShopConfig, ParsedOrder } from '../types.ts';
 
 let isRunning = false;
 let scanTimer: ReturnType<typeof setTimeout> | null = null;
 let pool: WorkerPool | null = null;
 let currentConfig: WorkerConfig | null = null;
+
+// In-memory lock to prevent duplicate processing within the same scan cycle
+const processingLocks = new Set<string>();
 
 // ─── PUBLIC CONTROL API ──────────────────────────────────────────────────────
 
@@ -55,7 +42,7 @@ export function start(config: WorkerConfig): void {
   pool = new WorkerPool(config.maxConcurrency);
 
   state.setStarted(config.pollIntervalMinutes, config.maxConcurrency);
-  logger.success('ORCH', `Worker STARTED — Polling every ${config.pollIntervalMinutes} min, Max concurrency: ${config.maxConcurrency}`);
+  logger.success('ORCH', `Worker STARTED — ${config.shops.length} shops, Polling: ${config.pollIntervalMinutes} min, Concurrency: ${config.maxConcurrency}`);
 
   // Run immediately, then schedule
   runScanCycle();
@@ -100,482 +87,317 @@ export function forceScan(): void {
 // ─── SCAN CYCLE ──────────────────────────────────────────────────────────────
 
 async function runScanCycle(): Promise<void> {
-  if (!isRunning || !currentConfig) return;
+  if (!currentConfig || !pool) return;
 
-  state.setStatus('scanning');
-  state.setLastScan();
-  logger.info('ORCH', '━━━ Starting scan cycle ━━━');
+  state.setScanning();
+  logger.info('ORCH', '═══════════════ SCAN CYCLE START ═══════════════');
 
   try {
-    await scanAndProcessAll(currentConfig);
-  } catch (err: any) {
-    logger.error('ORCH', `Scan cycle error: ${err.message}`);
+    // Process each shop sequentially (discover folders), but orders in parallel
+    for (const shopConfig of currentConfig.shops) {
+      if (!isRunning) break;
+      await processShop(shopConfig, currentConfig);
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error('ORCH', `Scan cycle error: ${message}`);
   }
+
+  logger.info('ORCH', '═══════════════ SCAN CYCLE END ═════════════════');
 
   // Schedule next scan
   if (isRunning && currentConfig) {
     const intervalMs = currentConfig.pollIntervalMinutes * 60 * 1000;
-    const nextScanTime = Date.now() + intervalMs;
-    state.setNextScan(nextScanTime);
-    state.setStatus('idle');
-
+    const nextScanAt = Date.now() + intervalMs;
+    state.setIdle(nextScanAt);
+    scanTimer = setTimeout(runScanCycle, intervalMs);
     logger.info('ORCH', `Next scan in ${currentConfig.pollIntervalMinutes} minutes`);
-    scanTimer = setTimeout(() => runScanCycle(), intervalMs);
   }
 }
 
-// ─── MAIN PROCESSING LOGIC ──────────────────────────────────────────────────
-
-async function scanAndProcessAll(config: WorkerConfig): Promise<void> {
-  // 1. List all date folders in root
-  const allFolders = await driveService.listSubfolders(config.driveRootFolderId);
-  const classified = classifyDateFolders(allFolders);
-
-  let ddMmYyyyFolders = classified.filter(f => f.type === 'DD_MM_YYYY');
-  let yyyyMmDdFolders = classified.filter(f => f.type === 'YYYY_MM_DD');
-  const unknownFolders = classified.filter(f => f.type === 'UNKNOWN');
-
-  if (config.targetDateFilter && config.targetDateFilter !== 'ALL') {
-    logger.info('ORCH', `🎯 TARGET DATE FILTER ACTIVE: ${config.targetDateFilter}`);
-    
-    // Filter DD-MM-YYYY
-    ddMmYyyyFolders = ddMmYyyyFolders.filter(f => f.name === config.targetDateFilter);
-    
-    // Filter YYYY-MM-DD
-    try {
-      const targetYyyyMmDd = convertDdMmYyyyToYyyyMmDd(config.targetDateFilter);
-      yyyyMmDdFolders = yyyyMmDdFolders.filter(f => f.name === targetYyyyMmDd);
-    } catch (err: any) {
-      logger.warn('ORCH', `Failed to convert target date filter to YYYY-MM-DD: ${err.message}`);
-      yyyyMmDdFolders = []; // Invalid target date format, so skip phase 2
-    }
-  }
-
-  logger.info('ORCH', `Found ${allFolders.length} folder(s): ${ddMmYyyyFolders.length} DD-MM-YYYY, ${yyyyMmDdFolders.length} YYYY-MM-DD, ${unknownFolders.length} unknown`);
-
-  // Generate a batch color for this entire scan cycle
-  const batchColor = generateRandomBatchColor();
-
-  // ── PHASE 1: Process DD-MM-YYYY folders (Priority) ──
-  logger.info('ORCH', '── PHASE 1: Processing DD-MM-YYYY folders ──');
-  for (const dateFolder of ddMmYyyyFolders) {
-    if (!isRunning) break;
-    await processDdMmYyyyFolder(config, dateFolder, batchColor);
-  }
-
-  // ── PHASE 2: Migrate YYYY-MM-DD folders ──
-  if (isRunning && yyyyMmDdFolders.length > 0) {
-    logger.info('ORCH', '── PHASE 2: Migrating YYYY-MM-DD folders ──');
-    for (const dateFolder of yyyyMmDdFolders) {
-      if (!isRunning) break;
-      await migrateYyyyMmDdFolder(config, dateFolder, batchColor);
-    }
-  }
-
-  logger.info('ORCH', '━━━ Scan cycle complete ━━━');
-}
-
-// ─── PHASE 1: DD-MM-YYYY Processing ─────────────────────────────────────────
+// ─── SHOP PROCESSING ─────────────────────────────────────────────────────────
 
 /**
- * Process a single DD-MM-YYYY date folder.
- * Subfolders are expected to be named like "JX9195703370_100 Pcs".
+ * Process a single shop: discover Drive folders, scan orders, process them.
  */
-async function processDdMmYyyyFolder(
-  config: WorkerConfig,
-  dateFolder: ClassifiedDateFolder,
-  batchColor: string
-): Promise<void> {
-  logger.info('ORCH', `[P1] Scanning: ${dateFolder.name}`);
-
-  const orderFolders = await driveService.listSubfolders(dateFolder.id);
-
-  // Collect valid tasks for parallel execution
-  const tasks: (() => Promise<void>)[] = [];
-
-  for (const orderFolder of orderFolders) {
-    const parsed = parseFolderName(orderFolder.name);
-    if (!parsed) {
-      logger.debug('ORCH', `[P1] Skipping non-order folder: ${orderFolder.name}`);
-      continue;
-    }
-
-    tasks.push(() =>
-      processOrder(config, parsed, dateFolder.id, dateFolder.name, orderFolder.id, batchColor)
-    );
-  }
-
-  if (tasks.length > 0 && pool) {
-    logger.info('ORCH', `[P1] Processing ${tasks.length} order(s) from ${dateFolder.name}`);
-    await pool.executeAll(tasks);
-  }
-}
-
-// ─── PHASE 2: YYYY-MM-DD Migration ─────────────────────────────────────────
-
-/**
- * Migrate subfolders from a YYYY-MM-DD date folder:
- * 1. For each subfolder, lookup order ID in EKSPORT (Col C)
- * 2. Validate variant (Col K) × qty (Col L) = expected photo count
- * 3. Count actual photos and compare
- * 4. Move subfolder to DD-MM-YYYY folder, rename to "JX****_total Pcs"
- * 5. Immediately process (generate PDF → upload → mark done)
- */
-async function migrateYyyyMmDdFolder(
-  config: WorkerConfig,
-  dateFolder: ClassifiedDateFolder,
-  batchColor: string
-): Promise<void> {
-  logger.info('ORCH', `[P2] Scanning: ${dateFolder.name}`);
-
-  const subfolders = await driveService.listSubfolders(dateFolder.id);
-  if (subfolders.length === 0) {
-    logger.debug('ORCH', `[P2] No subfolders in ${dateFolder.name}`);
-    return;
-  }
-
-  // Convert YYYY-MM-DD to DD-MM-YYYY for the target folder
-  const targetDateName = convertYyyyMmDdToDdMmYyyy(dateFolder.name);
-
-  for (const subfolder of subfolders) {
-    if (!isRunning) break;
-
-    // Skip if this folder has a proper RESI name (JX****, JN****, etc.)
-    // Folders like "583734596181722839_50 pcs" still have ORDER IDs, not resi — they need processing
-    const alreadyParsed = parseFolderName(subfolder.name);
-    if (alreadyParsed && /^[A-Z]{2}/i.test(alreadyParsed.resi)) {
-      logger.debug('ORCH', `[P2] Skipping already-migrated folder: ${subfolder.name}`);
-      continue;
-    }
-
-    try {
-      await migrateAndProcessSubfolder(config, subfolder, dateFolder, targetDateName, batchColor);
-    } catch (err: any) {
-      logger.error('ORCH', `[P2] Failed for ${subfolder.name}: ${err.message}`);
-    }
-  }
-}
-
-/**
- * Full pipeline for a single YYYY-MM-DD subfolder:
- * Validate → Move → Rename → Download → Generate PDF → Upload → Mark Done
- */
-async function migrateAndProcessSubfolder(
-  config: WorkerConfig,
-  subfolder: { id: string; name: string },
-  sourceFolder: ClassifiedDateFolder,
-  targetDateName: string,
-  batchColor: string
-): Promise<void> {
-  // ── Step 1: Lookup order in EKSPORT sheet ──
-  const eksportData = await sheetsService.lookupResiFromEksport(
-    config.spreadsheetId,
-    config.eksportSheetName,
-    subfolder.name
-  );
-
-  if (!eksportData) {
-    logger.warn('ORCH', `[P2] SKIP ${subfolder.name}: Order ID not found in EKSPORT Col C`);
-    return;
-  }
-
-  const { resi, variant, qty, expectedPhotos } = eksportData;
-
-  if (!resi) {
-    logger.warn('ORCH', `[P2] SKIP ${subfolder.name}: No Tracking ID (resi) in EKSPORT Col AP`);
-    return;
-  }
-
-  if (variant <= 0) {
-    logger.warn('ORCH', `[P2] SKIP ${subfolder.name}: Invalid variant in EKSPORT Col K`);
-    return;
-  }
-
-  logger.info('ORCH', `[P2] Found: ${subfolder.name} → Resi: ${resi}, Variant: ${variant} Pcs, Qty: ${qty}, Expected: ${expectedPhotos} photos`);
-
-  // ── Step 2: Check if already done in FOTO POLAROID ──
-  const fotoPolaroidOrder = await sheetsService.findOrderByResi(
-    config.spreadsheetId,
-    config.sheetName,
-    resi
-  );
-
-  if (fotoPolaroidOrder && fotoPolaroidOrder.isDone) {
-    logger.debug('ORCH', `[P2] SKIP ${subfolder.name}: Resi ${resi} already "done" in FOTO POLAROID`);
-    return;
-  }
-
-  // ── Step 3: Check if PDF already exists (anti-duplicate) ──
-  // Check in the TARGET DD-MM-YYYY folder (where PDF will be uploaded)
-  const targetFolderCheck = await driveService.findFolderByName(config.driveRootFolderId, targetDateName);
-  if (targetFolderCheck) {
-    const pdfExists = await driveService.checkOutputExists(targetFolderCheck.id, resi, expectedPhotos);
-    if (pdfExists) {
-      logger.debug('ORCH', `[P2] SKIP ${subfolder.name}: PDF already exists in ${targetDateName}`);
-      return;
-    }
-  }
-
-  // ── Step 4: Count photos and validate ──
-  const actualPhotoCount = await driveService.countImagesInFolder(subfolder.id);
-
-  if (actualPhotoCount !== expectedPhotos) {
-    logger.warn('ORCH', `[P2] SKIP ${subfolder.name}: Photo count mismatch — has ${actualPhotoCount}, expected ${expectedPhotos} (${variant}×${qty})`);
-    return;
-  }
-
-  logger.info('ORCH', `[P2] ✅ Validated ${subfolder.name}: ${actualPhotoCount}/${expectedPhotos} photos match`);
-
-  // ── DRY RUN ──
-  if (config.dryRun) {
-    logger.info('ORCH', `[P2] DRY RUN: Would migrate & process ${subfolder.name} → ${targetDateName}/${resi}_${expectedPhotos} Pcs`);
-    return;
-  }
-
-  // ── Step 5: In-memory lock ──
-  if (!state.acquireLock(resi)) {
-    logger.debug('ORCH', `[P2] SKIP ${subfolder.name}: Resi ${resi} currently locked`);
-    return;
-  }
-
-  const job = state.createJob(resi, expectedPhotos, sourceFolder.name, sourceFolder.id, subfolder.id);
+async function processShop(shopConfig: ShopConfig, config: WorkerConfig): Promise<void> {
+  const shopName = shopConfig.name;
+  logger.info('ORCH', `──── Shop: ${shopName} ────`);
 
   try {
-    // ── Step 6: Move folder to DD-MM-YYYY ──
-    state.updateJob(job.id, { status: 'moving', message: `Moving to ${targetDateName}...`, progress: 10 });
+    // 1. Resolve the shop — find Drive folders + auto-detect EDITOR column
+    const resolvedShop = await resolveShop(shopConfig, config.driveRootFolderId);
+    if (!resolvedShop) return; // Error already logged
 
-    const targetFolder = await driveService.findOrCreateFolder(
-      config.driveRootFolderId,
-      targetDateName
-    );
+    // 2. List order subfolders inside POLAROID folder
+    const orderFolders = await driveService.listSubfolders(resolvedShop.polaroidFolderId);
+    logger.info('ORCH', `[${shopName}] Found ${orderFolders.length} folders in ${shopConfig.polaroidFolderName}`);
 
-    try {
-      await driveService.moveFile(subfolder.id, sourceFolder.id, targetFolder.id);
-    } catch (moveErr: any) {
-      logger.warn('ORCH', `[P2] Move failed for ${resi} (${moveErr.message}). Processing in place.`);
+    if (orderFolders.length === 0) return;
+
+    // 3. Parse & filter valid order folder names
+    const tasks: Array<{ parsed: ParsedOrder; folderId: string }> = [];
+
+    for (const folder of orderFolders) {
+      const parsed = parseFolderName(folder.name);
+      if (!parsed) {
+        logger.debug('ORCH', `[${shopName}] Skipping non-order folder: "${folder.name}"`);
+        continue;
+      }
+
+      // In-memory lock check (prevent duplicate within same cycle)
+      const lockKey = `${shopName}:${parsed.resi}`;
+      if (processingLocks.has(lockKey)) {
+        logger.debug('ORCH', `[${shopName}] Already processing: ${parsed.resi}`);
+        continue;
+      }
+
+      tasks.push({ parsed, folderId: folder.id });
     }
 
-    // ── Step 7: Rename to resi_total format ──
-    let currentFolderName = subfolder.name;
-    try {
-      const newFolderName = buildOrderFolderName(resi, expectedPhotos);
-      await driveService.renameFile(subfolder.id, newFolderName);
-      currentFolderName = newFolderName;
-      logger.success('ORCH', `[P2] Renamed: ${subfolder.name} → ${newFolderName}`);
-    } catch (renameErr: any) {
-      logger.warn('ORCH', `[P2] Rename failed for ${resi}: ${renameErr.message}`);
-    }
-
-    // ── Step 8: Download images ──
-    state.updateJob(job.id, { status: 'downloading', message: 'Downloading images...', progress: 30, dateFolderName: targetDateName, dateFolderId: targetFolder.id });
-
-    const tempDir = path.join(config.tempDir, resi);
-    const imagePaths = await driveService.downloadImages(subfolder.id, tempDir);
-
-    if (imagePaths.length === 0) {
-      state.completeJob(job.id, 'error', 'Failed to download any images');
-      logger.error('ORCH', `[P2] ERROR ${resi}: No images downloaded`);
+    if (tasks.length === 0) {
+      logger.info('ORCH', `[${shopName}] No new orders to process`);
       return;
     }
 
-    logger.info('ORCH', `[P2] Downloaded ${imagePaths.length} images for ${resi}`);
+    logger.info('ORCH', `[${shopName}] ${tasks.length} order(s) to evaluate`);
 
-    // ── Step 9: Generate PDF ──
-    state.updateJob(job.id, { status: 'generating', message: 'Generating collage PDF...', progress: 50 });
+    // 4. Execute all orders with concurrency pool
+    await pool!.executeAll(
+      tasks.map(({ parsed, folderId }) => async () => {
+        const lockKey = `${shopName}:${parsed.resi}`;
+        processingLocks.add(lockKey);
+        try {
+          await processOrder(resolvedShop, parsed, folderId, config);
+        } finally {
+          processingLocks.delete(lockKey);
+        }
+      }),
+    );
 
-    const sheetQty = fotoPolaroidOrder?.qty || qty;
-    const outputFileName = buildOutputFileName(resi, expectedPhotos);
-    const outputPath = path.join(tempDir, outputFileName);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error('ORCH', `[${shopName}] Shop processing error: ${message}`);
+  }
+}
 
-    await generatePDF({
-      imagePaths,
-      label: resi,
-      qty: sheetQty,
-      tagColor: batchColor,
-      outputPath,
-      onProgress: (progressStatus) => {
-        state.updateJob(job.id, { message: progressStatus });
-      },
-    });
+/**
+ * Resolve a ShopConfig into a ResolvedShop by discovering Drive folder IDs
+ * and auto-detecting the EDITOR column from the spreadsheet header.
+ */
+async function resolveShop(
+  shopConfig: ShopConfig,
+  rootFolderId: string,
+): Promise<ResolvedShop | null> {
+  const shopName = shopConfig.name;
 
-    // ── Step 10: Upload PDF ──
-    state.updateJob(job.id, { status: 'uploading', message: 'Uploading PDF to Drive...', progress: 80 });
+  try {
+    // Find the shop folder inside root PESANAN folder
+    const shopFolder = await driveService.findFolderByName(rootFolderId, shopName);
+    if (!shopFolder) {
+      logger.warn('ORCH', `[${shopName}] Shop folder not found in Drive root. Skipping.`);
+      return null;
+    }
 
-    await driveService.uploadPDF(targetFolder.id, outputPath, outputFileName);
-    
-    // ── Step 10b: Upload to Secondary Drive if configured ──
+    // Find the POLAROID subfolder inside the shop folder
+    const polaroidFolder = await driveService.findFolderByName(shopFolder.id, shopConfig.polaroidFolderName);
+    if (!polaroidFolder) {
+      logger.warn('ORCH', `[${shopName}] "${shopConfig.polaroidFolderName}" folder not found inside shop folder. Skipping.`);
+      return null;
+    }
+
+    // Auto-detect EDITOR column (or use override from config)
+    const columns = shopConfig.columns ||
+      await sheetsService.detectEditorColumn(shopConfig.spreadsheetId, shopConfig.sheetName);
+
+    return {
+      ...shopConfig,
+      shopFolderId: shopFolder.id,
+      polaroidFolderId: polaroidFolder.id,
+      columns,
+    };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error('ORCH', `[${shopName}] Failed to resolve shop: ${message}`);
+    return null;
+  }
+}
+
+// ─── ORDER PROCESSING ────────────────────────────────────────────────────────
+
+/**
+ * Process a single order: validate → download → generate PDF → upload → mark done.
+ */
+async function processOrder(
+  shop: ResolvedShop,
+  parsed: ParsedOrder,
+  orderFolderId: string,
+  config: WorkerConfig,
+): Promise<void> {
+  const { resi, variant } = parsed;
+  const shopName = shop.name;
+  const jobId = `${shopName}:${resi}:${Date.now()}`;
+
+  // Create job tracking entry
+  const job = state.addJob({
+    id: jobId,
+    resi,
+    variant,
+    qty: 1,
+    shopName,
+    orderFolderId,
+    status: 'validating',
+    message: 'Validating against spreadsheet...',
+    startedAt: Date.now(),
+    progress: 0,
+  });
+
+  try {
+    // ── Step 1: Check if output PDF already exists in secondary Drive ──
     if (config.secondaryDriveFolderId) {
-      state.updateJob(job.id, { status: 'uploading', message: 'Uploading PDF to Secondary Drive...', progress: 85 });
-      try {
-        await driveService.uploadPDF(config.secondaryDriveFolderId, outputPath, outputFileName);
-        logger.info('ORCH', `[P2] Uploaded copy to Secondary Drive for ${resi}`);
-      } catch (err: any) {
-        logger.warn('ORCH', `[P2] Failed to upload to Secondary Drive for ${resi}: ${err.message}`);
-        // Do not fail the whole job if secondary upload fails
+      const outputExists = await driveService.checkOutputExists(
+        config.secondaryDriveFolderId, resi, variant,
+      );
+      if (outputExists) {
+        state.updateJob(jobId, { status: 'skipped', message: 'PDF already exists in secondary Drive', progress: 100 });
+        state.completeJob(jobId, 'skipped');
+        return;
       }
     }
 
-    // ── Step 11: Mark done in FOTO POLAROID Col K ──
-    if (fotoPolaroidOrder) {
-      state.updateJob(job.id, { status: 'marking', message: 'Marking "done" in Col K...', progress: 90 });
-      await sheetsService.markAsDone(config.spreadsheetId, config.sheetName, fotoPolaroidOrder.rowNumber);
-    } else {
-      logger.warn('ORCH', `[P2] ${resi}: Resi not found in FOTO POLAROID — PDF uploaded but "done" not marked`);
-    }
-
-    // ── Step 12: Cleanup temp files ──
-    try {
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    } catch { /* non-critical */ }
-
-    state.completeJob(job.id, 'done', `Completed: ${outputFileName} (${sheetQty} pages)`);
-    logger.success('ORCH', `[P2] ✅ ${resi}: ${outputFileName} uploaded & marked "done"`);
-
-  } catch (err: any) {
-    state.completeJob(job.id, 'error', err.message);
-    logger.error('ORCH', `[P2] ERROR ${resi}: ${err.message}`);
-  } finally {
-    state.releaseLock(resi);
-  }
-}
-
-// ─── ORDER PROCESSING (Shared by Phase 1) ───────────────────────────────────
-
-/**
- * Process a single order: validate → download → generate → upload → mark done.
- */
-async function processOrder(
-  config: WorkerConfig,
-  parsed: ParsedOrder,
-  dateFolderId: string,
-  dateFolderName: string,
-  orderFolderId: string,
-  batchColor: string
-): Promise<void> {
-  const { resi, variant } = parsed;
-
-  // ─── LAYER 1: Check if PDF already exists in Drive ─────────────────
-  try {
-    const alreadyExists = await driveService.checkOutputExists(dateFolderId, resi, variant);
-    if (alreadyExists) {
-      logger.debug('ORCH', `SKIP [L1] ${resi}: PDF already exists in Drive`);
-      return;
-    }
-  } catch (err: any) {
-    logger.error('ORCH', `Drive check failed for ${resi}: ${err.message}`);
-    return;
-  }
-
-  // ─── LAYER 2: In-memory lock ───────────────────────────────────────
-  if (!state.acquireLock(resi)) {
-    logger.debug('ORCH', `SKIP [L2] ${resi}: Currently being processed`);
-    return;
-  }
-
-  const job = state.createJob(resi, variant, dateFolderName, dateFolderId, orderFolderId);
-
-  try {
-    // ─── LAYER 3+4+5: Spreadsheet validation ────────────────────────
-    state.updateJob(job.id, { status: 'validating', message: 'Validating with spreadsheet...', progress: 10 });
+    // ── Step 2: Validate against spreadsheet ──────────────────────────
+    state.updateJob(jobId, { status: 'validating', message: 'Checking spreadsheet...', progress: 10 });
 
     const validation = await sheetsService.validateOrder(
-      config.spreadsheetId,
-      config.sheetName,
-      resi,
-      variant
+      shop.spreadsheetId, shop.sheetName, resi, variant, shop.columns,
     );
 
     if (!validation.valid) {
-      state.completeJob(job.id, 'skipped', validation.reason || 'Validation failed');
-      logger.warn('ORCH', `SKIP ${resi}: ${validation.reason}`);
+      logger.info('ORCH', `[${shopName}] SKIP ${resi}: ${validation.reason}`);
+      state.updateJob(jobId, { status: 'skipped', message: validation.reason || 'Validation failed', progress: 100 });
+      state.completeJob(jobId, 'skipped');
       return;
     }
 
-    const qty = validation.order?.qty || 1;
-    const sheetRowNumber = validation.order!.rowNumber;
+    const order = validation.order!;
+    const expectedPhotos = order.expectedPhotos;
+    state.updateJob(jobId, { qty: order.qty, message: `Validated: ${variant} × ${order.qty} = ${expectedPhotos} photos` });
 
-    // ─── LAYER 6: Image count validation ────────────────────────────
-    state.updateJob(job.id, { status: 'validating', message: 'Checking image count...', progress: 20 });
+    // ── Step 3: Download images ───────────────────────────────────────
+    state.updateJob(jobId, { status: 'downloading', message: 'Downloading images...', progress: 20 });
 
-    const imageCount = await driveService.countImagesInFolder(orderFolderId);
-    if (imageCount !== variant) {
-      state.completeJob(job.id, 'skipped', `Image count mismatch: has ${imageCount}, expected ${variant}`);
-      logger.warn('ORCH', `SKIP [L6] ${resi}: has ${imageCount} images, expected ${variant}`);
+    const tempDir = path.join(config.tempDir, `${shopName}_${resi}_${Date.now()}`);
+    let localPaths: string[];
+
+    try {
+      localPaths = await driveService.downloadImages(orderFolderId, tempDir);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Download failed: ${msg}`);
+    }
+
+    if (localPaths.length === 0) {
+      state.updateJob(jobId, { status: 'skipped', message: 'No images found in folder', progress: 100 });
+      state.completeJob(jobId, 'skipped');
+      cleanup(tempDir);
       return;
     }
 
-    // ─── DRY RUN: Stop before any mutations ────────────────────────
-    if (config.dryRun) {
-      state.completeJob(job.id, 'done', 'DRY RUN: Would process this order');
-      logger.info('ORCH', `DRY RUN: ${resi} passed all validations (qty=${qty})`);
-      return;
+    // ── Step 3b: Trim photos if more than expected ────────────────────
+    if (localPaths.length > expectedPhotos) {
+      logger.info('ORCH', `[${shopName}] ${resi}: ${localPaths.length} photos found, trimming to ${expectedPhotos} (variant × qty)`);
+      localPaths = localPaths.slice(0, expectedPhotos);
     }
 
-    // ─── DOWNLOAD IMAGES ───────────────────────────────────────────
-    state.updateJob(job.id, { status: 'downloading', message: 'Downloading images...', progress: 30 });
+    logger.info('ORCH', `[${shopName}] ${resi}: Downloaded ${localPaths.length} images`);
 
-    const tempDir = path.join(config.tempDir, resi);
-    const imagePaths = await driveService.downloadImages(orderFolderId, tempDir);
+    // ── Step 4: Generate PDF ──────────────────────────────────────────
+    state.updateJob(jobId, { status: 'generating', message: `Generating PDF (${localPaths.length} photos)...`, progress: 40 });
 
-    if (imagePaths.length === 0) {
-      state.completeJob(job.id, 'error', 'Failed to download any images');
-      logger.error('ORCH', `ERROR ${resi}: No images downloaded`);
-      return;
-    }
-
-    logger.info('ORCH', `Downloaded ${imagePaths.length} images for ${resi}`);
-
-    // ─── GENERATE PDF ──────────────────────────────────────────────
-    state.updateJob(job.id, { status: 'generating', message: 'Generating collage PDF...', progress: 50 });
-
+    const batchColor = generateRandomBatchColor();
     const outputFileName = buildOutputFileName(resi, variant);
     const outputPath = path.join(tempDir, outputFileName);
 
-    await generatePDF({
-      imagePaths,
-      label: resi,
-      qty,
-      tagColor: batchColor,
-      outputPath,
-      onProgress: (status) => {
-        state.updateJob(job.id, { message: status });
-      },
-    });
-
-    // ─── UPLOAD PDF ────────────────────────────────────────────────
-    state.updateJob(job.id, { status: 'uploading', message: 'Uploading PDF to Drive...', progress: 80 });
-
-    await driveService.uploadPDF(dateFolderId, outputPath, outputFileName);
-
-    // ─── UPLOAD TO SECONDARY DRIVE ─────────────────────────────────
-    if (config.secondaryDriveFolderId) {
-      state.updateJob(job.id, { status: 'uploading', message: 'Uploading PDF to Secondary Drive...', progress: 85 });
-      try {
-        await driveService.uploadPDF(config.secondaryDriveFolderId, outputPath, outputFileName);
-        logger.info('ORCH', `Uploaded copy to Secondary Drive for ${resi}`);
-      } catch (err: any) {
-        logger.warn('ORCH', `Failed to upload to Secondary Drive for ${resi}: ${err.message}`);
-        // Do not fail the whole job if secondary upload fails
-      }
+    try {
+      await generatePDF({
+        imagePaths: localPaths,
+        outputPath,
+        label: resi,
+        qty: order.qty,
+        tagColor: batchColor,
+        onProgress: (statusMsg) => {
+          state.updateJob(jobId, { progress: 60, message: `Generating PDF... ${statusMsg}` });
+        },
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`PDF generation failed: ${msg}`);
     }
 
-    // ─── MARK DONE in Column K ─────────────────────────────────────
-    state.updateJob(job.id, { status: 'marking', message: 'Marking "done" in Col K...', progress: 90 });
+    // ── Step 5: Upload PDF to secondary Drive ─────────────────────────
+    if (config.secondaryDriveFolderId && !config.dryRun) {
+      state.updateJob(jobId, { status: 'uploading', message: 'Uploading PDF...', progress: 75 });
 
-    await sheetsService.markAsDone(config.spreadsheetId, config.sheetName, sheetRowNumber);
+      try {
+        await driveService.uploadPDF(config.secondaryDriveFolderId, outputPath, outputFileName);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`Upload failed: ${msg}`);
+      }
+    } else if (config.dryRun) {
+      logger.info('ORCH', `[${shopName}] DRY RUN: Would upload ${outputFileName}`);
+    }
 
-    // ─── CLEANUP TEMP FILES ────────────────────────────────────────
-    try {
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    } catch { /* non-critical */ }
+    // ── Step 6: Mark as processed in spreadsheet ──────────────────────
+    if (!config.dryRun) {
+      state.updateJob(jobId, { status: 'marking', message: 'Marking as BOT in spreadsheet...', progress: 90 });
 
-    state.completeJob(job.id, 'done', `Completed: ${outputFileName} (${qty} pages)`);
-    logger.success('ORCH', `✅ ${resi}: ${outputFileName} uploaded & marked "done" in Col K`);
+      try {
+        await sheetsService.markAsProcessed(
+          shop.spreadsheetId,
+          shop.sheetName,
+          order.rowNumber,
+          shop.columns,
+          config.editorText,
+        );
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`Sheet marking failed: ${msg}`);
+      }
+    } else {
+      logger.info('ORCH', `[${shopName}] DRY RUN: Would mark row ${order.rowNumber} as BOT`);
+    }
 
-  } catch (err: any) {
-    state.completeJob(job.id, 'error', err.message);
-    logger.error('ORCH', `ERROR ${resi}: ${err.message}`);
-  } finally {
-    state.releaseLock(resi);
+    // ── Done! ─────────────────────────────────────────────────────────
+    state.updateJob(jobId, { status: 'done', message: `✅ Completed successfully`, progress: 100 });
+    state.completeJob(jobId, 'done');
+    logger.success('ORCH', `[${shopName}] ✅ ${resi} — ${variant} pcs × ${order.qty} — DONE`);
+
+    // Cleanup temp files
+    cleanup(tempDir);
+
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error('ORCH', `[${shopName}] ❌ ${resi}: ${message}`);
+    state.updateJob(jobId, { status: 'error', message, progress: 100 });
+    state.completeJob(jobId, 'error');
+
+    // Cleanup even on error
+    cleanup(path.join(config.tempDir, `${shopName}_${resi}_*`));
+  }
+}
+
+// ─── Utilities ───────────────────────────────────────────────────────────────
+
+/**
+ * Safely remove a temporary directory and its contents.
+ */
+function cleanup(dirPath: string): void {
+  try {
+    if (fs.existsSync(dirPath)) {
+      fs.rmSync(dirPath, { recursive: true, force: true });
+    }
+  } catch {
+    // Non-critical — temp files will be cleaned up eventually
   }
 }

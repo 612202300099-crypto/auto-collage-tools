@@ -1,15 +1,18 @@
 /**
  * config.ts — Environment-based configuration for the Worker.
  *
- * Semua konfigurasi dibaca dari environment variables (.env)
- * dengan sensible defaults. Validasi dilakukan saat startup.
+ * Multi-shop configuration: each shop has its own spreadsheet and Drive folder.
+ * Shops are configured via SHOPS env var (JSON array) for maximum flexibility.
+ *
+ * All configuration is read from environment variables (.env)
+ * with sensible defaults. Validation is performed at startup.
  */
 import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
-import type { WorkerConfig } from './types.ts';
+import type { WorkerConfig, ShopConfig } from './types.ts';
 
-// Load .env dari root project (satu level di atas worker/)
+// Load .env from root project (one level above worker/)
 dotenv.config({ path: path.resolve(import.meta.dirname, '..', '.env') });
 
 function requireEnv(key: string, defaultValue?: string): string {
@@ -20,7 +23,64 @@ function requireEnv(key: string, defaultValue?: string): string {
   return value;
 }
 
+/**
+ * Parse SHOPS configuration from environment.
+ * Accepts a JSON array string.
+ *
+ * Example:
+ * SHOPS='[{"name":"CustomeBase","spreadsheetId":"abc123"}]'
+ */
+function parseShopsConfig(): ShopConfig[] {
+  const raw = process.env.SHOPS;
+  if (!raw) {
+    throw new Error(
+      '[CONFIG] Missing SHOPS environment variable.\n' +
+      'Please configure shops as a JSON array. Example:\n\n' +
+      'SHOPS=\'[{"name":"MyShop","spreadsheetId":"abc123"}]\'\n'
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(
+      '[CONFIG] Invalid SHOPS JSON format. Please check syntax.\n' +
+      `Current value: ${raw.substring(0, 100)}...`
+    );
+  }
+
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    throw new Error('[CONFIG] SHOPS must be a non-empty JSON array');
+  }
+
+  const shops: ShopConfig[] = [];
+
+  for (let i = 0; i < parsed.length; i++) {
+    const shop = parsed[i] as Record<string, unknown>;
+
+    if (!shop.name || typeof shop.name !== 'string') {
+      throw new Error(`[CONFIG] Shop #${i + 1}: "name" is required (string)`);
+    }
+    if (!shop.spreadsheetId || typeof shop.spreadsheetId !== 'string') {
+      throw new Error(`[CONFIG] Shop "${shop.name}": "spreadsheetId" is required (string)`);
+    }
+
+    shops.push({
+      name: shop.name,
+      spreadsheetId: shop.spreadsheetId,
+      sheetName: (shop.sheetName as string) || 'FOTO POLAROID',
+      polaroidFolderName: (shop.polaroidFolderName as string) || 'POLAROID',
+      columns: shop.columns as ShopConfig['columns'],
+    });
+  }
+
+  return shops;
+}
+
 export function loadConfig(): WorkerConfig {
+  const shops = parseShopsConfig();
+
   const config: WorkerConfig = {
     googleCredentialsPath: requireEnv(
       'GOOGLE_CREDENTIALS_PATH',
@@ -31,9 +91,8 @@ export function loadConfig(): WorkerConfig {
       path.resolve(import.meta.dirname, '..', 'credentials', 'token.json')
     ),
     driveRootFolderId: requireEnv('DRIVE_ROOT_FOLDER_ID'),
-    spreadsheetId: requireEnv('SPREADSHEET_ID'),
-    sheetName: requireEnv('SHEET_NAME', 'FOTO POLAROID'),
-    eksportSheetName: requireEnv('EKSPORT_SHEET_NAME', 'EKSPORT'),
+    shops,
+    editorText: process.env.EDITOR_TEXT || '',
     pollIntervalMinutes: parseInt(process.env.POLL_INTERVAL_MINUTES || '5', 10),
     maxConcurrency: parseInt(process.env.MAX_CONCURRENCY || '5', 10),
     tempDir: path.resolve(import.meta.dirname, '..', '.tmp-worker'),
@@ -41,7 +100,6 @@ export function loadConfig(): WorkerConfig {
     dryRun: process.env.DRY_RUN === 'true',
     serverPort: parseInt(process.env.WORKER_PORT || '4000', 10),
     secondaryDriveFolderId: process.env.SECONDARY_DRIVE_FOLDER_ID,
-    targetDateFilter: process.env.TARGET_DATE_FILTER || 'ALL',
   };
 
   // Validate: Credentials file must exist

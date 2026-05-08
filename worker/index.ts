@@ -18,7 +18,7 @@ import * as orchestrator from './core/orchestrator.ts';
 async function main() {
   console.log('\n');
   console.log('  ╔═══════════════════════════════════════════════════╗');
-  console.log('  ║      🖨️  AutoCollage Automation Worker v1.0       ║');
+  console.log('  ║    🖨️  AutoCollage Worker v2.0 — Multi-Shop       ║');
   console.log('  ║       Polaroid Collage Pipeline Engine            ║');
   console.log('  ╚═══════════════════════════════════════════════════╝');
   console.log('');
@@ -33,8 +33,14 @@ async function main() {
     const config = loadConfig();
     if (dryRun) config.dryRun = true;
 
-    logger.info('BOOT', `Config loaded — Drive: ${config.driveRootFolderId.substring(0, 10)}...`);
+    logger.info('BOOT', `Config loaded — Root: ${config.driveRootFolderId.substring(0, 10)}... | ${config.shops.length} shop(s)`);
+    for (const shop of config.shops) {
+      logger.info('BOOT', `  → ${shop.name} (Sheet: ${shop.spreadsheetId.substring(0, 10)}...)`);
+    }
     logger.info('BOOT', `Polling: ${config.pollIntervalMinutes} min | Concurrency: ${config.maxConcurrency} | DryRun: ${config.dryRun}`);
+    if (config.editorText) {
+      logger.info('BOOT', `Editor Text: "${config.editorText}"`);
+    }
 
     // 2. Initialize Google APIs
     await initGoogleAuth(config.googleCredentialsPath, config.googleTokenPath);

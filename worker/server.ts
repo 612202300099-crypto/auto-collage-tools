@@ -5,7 +5,7 @@
  * - REST API for worker control (start/stop/configure)
  * - Real-time state & log endpoints for the dashboard
  * - Serves the dashboard HTML
- * - Graceful shutdown handling
+ * - Multi-shop configuration management
  */
 import express from 'express';
 import path from 'path';
@@ -64,7 +64,7 @@ export function createServer(config: WorkerConfig) {
 
   // ─── API: Update configuration ────────────────────────────────────────
   app.post('/api/config', (req, res) => {
-    const { maxConcurrency, pollIntervalMinutes, secondaryDriveFolderId, targetDateFilter } = req.body;
+    const { maxConcurrency, pollIntervalMinutes, secondaryDriveFolderId, editorText } = req.body;
     const envUpdates: Record<string, string> = {};
 
     if (maxConcurrency !== undefined) {
@@ -87,39 +87,38 @@ export function createServer(config: WorkerConfig) {
     }
 
     if (secondaryDriveFolderId !== undefined) {
-      // Support both full URLs and pure IDs
       let folderId = secondaryDriveFolderId.trim();
       const match = folderId.match(/folders\/([a-zA-Z0-9_-]+)/);
       if (match) folderId = match[1];
-      
+
       config.secondaryDriveFolderId = folderId || undefined;
       envUpdates['SECONDARY_DRIVE_FOLDER_ID'] = folderId || '';
       logger.info('API', `Secondary Drive Folder updated to ${folderId ? folderId : 'none'}`);
     }
 
-    if (targetDateFilter !== undefined) {
-      const filter = targetDateFilter.trim().toUpperCase() || 'ALL';
-      config.targetDateFilter = filter;
-      envUpdates['TARGET_DATE_FILTER'] = filter;
-      logger.info('API', `Target Date Filter updated to ${filter}`);
+    if (editorText !== undefined) {
+      config.editorText = editorText.trim();
+      envUpdates['EDITOR_TEXT'] = config.editorText;
+      logger.info('API', `Editor Text updated to "${config.editorText}"`);
     }
 
     if (Object.keys(envUpdates).length > 0) {
       try {
         saveConfig(envUpdates);
-      } catch (err: any) {
-        logger.error('API', `Failed to save config to .env: ${err.message}`);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error('API', `Failed to save config to .env: ${msg}`);
       }
     }
 
-    res.json({ 
-      success: true, 
-      config: { 
-        maxConcurrency: config.maxConcurrency, 
+    res.json({
+      success: true,
+      config: {
+        maxConcurrency: config.maxConcurrency,
         pollIntervalMinutes: config.pollIntervalMinutes,
         secondaryDriveFolderId: config.secondaryDriveFolderId,
-        targetDateFilter: config.targetDateFilter
-      } 
+        editorText: config.editorText,
+      },
     });
   });
 
@@ -131,10 +130,9 @@ export function createServer(config: WorkerConfig) {
       dryRun: config.dryRun,
       enableFaceDetection: config.enableFaceDetection,
       driveRootFolderId: config.driveRootFolderId,
-      spreadsheetId: config.spreadsheetId,
-      sheetName: config.sheetName,
       secondaryDriveFolderId: config.secondaryDriveFolderId,
-      targetDateFilter: config.targetDateFilter,
+      editorText: config.editorText,
+      shops: config.shops.map(s => ({ name: s.name, spreadsheetId: s.spreadsheetId })),
     });
   });
 

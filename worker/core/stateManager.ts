@@ -4,7 +4,6 @@
  * Tracks:
  * - Worker status (running/stopped/scanning/idle)
  * - Active & completed jobs
- * - In-memory locks to prevent duplicate processing
  * - Statistics for dashboard
  *
  * This is the single source of truth for the worker's state.
@@ -12,23 +11,6 @@
 import type { WorkerState, WorkerStatus, ProcessingJob, JobStatus } from '../types.ts';
 
 const MAX_HISTORY = 100;
-
-// ─── In-Memory Lock Set ──────────────────────────────────────────────────────
-const activeLocks = new Set<string>();
-
-export function acquireLock(resi: string): boolean {
-  if (activeLocks.has(resi)) return false;
-  activeLocks.add(resi);
-  return true;
-}
-
-export function releaseLock(resi: string): void {
-  activeLocks.delete(resi);
-}
-
-export function isLocked(resi: string): boolean {
-  return activeLocks.has(resi);
-}
 
 // ─── Worker State ────────────────────────────────────────────────────────────
 
@@ -67,55 +49,47 @@ export function setStopped(): void {
   state.nextScanAt = null;
 }
 
-export function setLastScan(): void {
+export function setScanning(): void {
+  state.status = 'scanning';
   state.lastScanAt = Date.now();
 }
 
-export function setNextScan(timestamp: number): void {
-  state.nextScanAt = timestamp;
+export function setIdle(nextScanAt: number): void {
+  state.status = 'idle';
+  state.nextScanAt = nextScanAt;
 }
 
 // ─── Job Management ──────────────────────────────────────────────────────────
 
-export function createJob(
-  resi: string,
-  variant: number,
-  dateFolderName: string,
-  dateFolderId: string,
-  orderFolderId: string,
-  qty: number = 1
-): ProcessingJob {
-  const job: ProcessingJob = {
-    id: `${resi}-${Date.now()}`,
-    resi,
-    variant,
-    dateFolderName,
-    dateFolderId,
-    orderFolderId,
-    status: 'queued',
-    message: 'Queued for processing',
-    startedAt: Date.now(),
-    qty,
-    progress: 0,
-  };
+/**
+ * Add a new job to the active jobs list.
+ */
+export function addJob(job: ProcessingJob): ProcessingJob {
   state.activeJobs.push(job);
   return job;
 }
 
-export function updateJob(jobId: string, updates: Partial<Pick<ProcessingJob, 'status' | 'message' | 'progress' | 'dateFolderName' | 'dateFolderId'>>): void {
+/**
+ * Update fields on an active job.
+ */
+export function updateJob(
+  jobId: string,
+  updates: Partial<Pick<ProcessingJob, 'status' | 'message' | 'progress' | 'qty'>>,
+): void {
   const job = state.activeJobs.find(j => j.id === jobId);
   if (job) {
     Object.assign(job, updates);
   }
 }
 
-export function completeJob(jobId: string, finalStatus: 'done' | 'skipped' | 'error', message: string): void {
+/**
+ * Complete a job — move it from active to history and update counters.
+ */
+export function completeJob(jobId: string, finalStatus: 'done' | 'skipped' | 'error'): void {
   const idx = state.activeJobs.findIndex(j => j.id === jobId);
   if (idx === -1) return;
 
   const job = state.activeJobs[idx];
-  job.status = finalStatus;
-  job.message = message;
   job.completedAt = Date.now();
   job.progress = 100;
 
@@ -143,5 +117,4 @@ export function resetStats(): void {
   state.totalSkipped = 0;
   state.activeJobs = [];
   state.history = [];
-  activeLocks.clear();
 }

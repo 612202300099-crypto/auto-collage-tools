@@ -436,8 +436,8 @@
       </div>
     </div>
     <div style="display:flex;align-items:center;gap:1rem;">
-      <div class="status-badge" id="targetDateBadge" style="background: rgba(168,85,247,0.15); color: #a855f7; border: 1px solid rgba(168,85,247,0.3);">
-        🎯 TARGET: ALL
+      <div class="status-badge" id="shopsBadge" style="background: rgba(168,85,247,0.15); color: #a855f7; border: 1px solid rgba(168,85,247,0.3);">
+        🏪 Shops: loading...
       </div>
       <div class="next-scan" id="nextScanInfo"></div>
       <div class="status-badge" id="statusBadge">
@@ -486,8 +486,10 @@
             <input type="number" class="config-input" id="cfgInterval" min="1" max="60" value="5" onchange="updateConfig()">
             <label>Workers</label>
             <input type="number" class="config-input" id="cfgConcurrency" min="1" max="20" value="5" onchange="updateConfig()">
-            <label style="margin-left: auto;">Target Date</label>
-            <input type="text" class="config-input" id="cfgTargetDate" placeholder="ALL / DD-MM-YYYY" style="width: 140px; text-align: left;" onchange="updateConfig()">
+          </div>
+          <div style="display: flex; gap: 0.8rem; width: 100%; align-items: center; margin-top: 0.5rem;">
+            <label style="min-width: max-content;">Editor Text</label>
+            <input type="text" class="config-input" id="cfgEditorText" placeholder="e.g. sen 3, bot session 1" style="flex: 1; text-align: left;" onchange="updateConfig()">
           </div>
           <div style="display: flex; gap: 0.8rem; width: 100%; align-items: center; margin-top: 0.5rem;">
             <label style="min-width: max-content;">Secondary Drive Link / ID</label>
@@ -567,8 +569,12 @@
         document.getElementById('cfgInterval').value = cfg.pollIntervalMinutes;
         document.getElementById('cfgConcurrency').value = cfg.maxConcurrency;
         document.getElementById('cfgSecondaryDrive').value = cfg.secondaryDriveFolderId || '';
-        document.getElementById('cfgTargetDate').value = cfg.targetDateFilter === 'ALL' ? '' : cfg.targetDateFilter;
-        document.getElementById('targetDateBadge').textContent = `🎯 TARGET: ${cfg.targetDateFilter}`;
+        document.getElementById('cfgEditorText').value = cfg.editorText || '';
+        // Update shops badge
+        if (cfg.shops && cfg.shops.length > 0) {
+          const names = cfg.shops.map(s => s.name).join(', ');
+          document.getElementById('shopsBadge').textContent = `🏪 ${cfg.shops.length} Shops: ${names}`;
+        }
       } catch (e) {}
     }
 
@@ -589,7 +595,7 @@
       const interval = document.getElementById('cfgInterval').value;
       const concurrency = document.getElementById('cfgConcurrency').value;
       const secondaryDrive = document.getElementById('cfgSecondaryDrive').value;
-      const targetDate = document.getElementById('cfgTargetDate').value;
+      const editorText = document.getElementById('cfgEditorText').value;
       try {
         await fetch('/api/config', {
           method: 'POST',
@@ -598,11 +604,11 @@
             pollIntervalMinutes: parseInt(interval),
             maxConcurrency: parseInt(concurrency),
             secondaryDriveFolderId: secondaryDrive,
-            targetDateFilter: targetDate || 'ALL'
+            editorText: editorText
           }),
         });
         fetchState();
-        fetchConfig(); // refresh badge
+        fetchConfig();
       } catch (e) {}
     }
 
@@ -662,7 +668,7 @@
           <div class="job-item">
             <div>
               <div class="job-resi">${job.resi}</div>
-              <div class="job-meta">${job.dateFolderName} · ${job.variant} pcs · qty ${job.qty} · ${elapsed}</div>
+              <div class="job-meta">${job.shopName || 'Unknown'} · ${job.variant} pcs · qty ${job.qty} · ${elapsed}</div>
               <div class="job-meta">${job.message}</div>
             </div>
             <div class="job-status ${job.status}">${job.status}</div>

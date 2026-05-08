@@ -20,12 +20,48 @@ export interface DriveFile {
   size?: number;
 }
 
-// ─── Date Folder Classification ─────────────────────────────────────────────
+// ─── Shop Configuration ─────────────────────────────────────────────────────
 
-export type DateFolderType = 'DD_MM_YYYY' | 'YYYY_MM_DD' | 'UNKNOWN';
+/**
+ * Column mapping for the FOTO POLAROID sheet.
+ * Columns B, G, H, J are fixed across all shops.
+ * EDITOR column varies per shop (auto-detected from header row).
+ */
+export interface ShopColumnMapping {
+  /** Column letter for EDITOR (e.g., "M" or "N") — auto-detected */
+  editor: string;
+  /** Column letter for editor text (column after EDITOR) — auto-detected */
+  editorText: string;
+}
 
-export interface ClassifiedDateFolder extends DriveFolder {
-  type: DateFolderType;
+/**
+ * Configuration for a single shop/toko.
+ * Each shop has its own Drive folder and spreadsheet.
+ */
+export interface ShopConfig {
+  /** Display name for the shop (e.g., "CustomeBase") */
+  name: string;
+  /** Google Spreadsheet ID for this shop */
+  spreadsheetId: string;
+  /** Sheet name containing order data (default: "FOTO POLAROID") */
+  sheetName: string;
+  /** Name of the product folder to scan inside the shop folder (default: "POLAROID") */
+  polaroidFolderName: string;
+  /** Column mapping — auto-detected at runtime, but can be overridden */
+  columns?: ShopColumnMapping;
+}
+
+/**
+ * Runtime-resolved shop info (after scanning Drive).
+ * Contains the Drive folder IDs discovered during scan.
+ */
+export interface ResolvedShop extends ShopConfig {
+  /** Drive folder ID for the shop folder (discovered from root) */
+  shopFolderId: string;
+  /** Drive folder ID for the POLAROID subfolder (discovered from shop folder) */
+  polaroidFolderId: string;
+  /** Auto-detected column mapping from spreadsheet header */
+  columns: ShopColumnMapping;
 }
 
 // ─── Parsed Order Info ──────────────────────────────────────────────────────
@@ -33,7 +69,7 @@ export interface ClassifiedDateFolder extends DriveFolder {
 export interface ParsedOrder {
   /** Nomor resi, e.g., "JX9171527480" */
   resi: string;
-  /** Jumlah foto yang diharapkan, e.g., 25 */
+  /** Jumlah foto yang diharapkan per copy, e.g., 25 */
   variant: number;
   /** Nama folder asli di Drive */
   rawFolderName: string;
@@ -48,12 +84,14 @@ export interface SheetOrderData {
   resi: string;
   /** Variant dari kolom G (e.g., "25 Pcs") — angka yang diekstrak */
   variant: number;
-  /** Qty dari kolom H — jumlah copy/pages */
+  /** Qty dari kolom H — jumlah copy */
   qty: number;
+  /** Total foto yang diharapkan (variant × qty) */
+  expectedPhotos: number;
   /** Status transaksi dari kolom J */
   status: string;
-  /** Apakah kolom K (VARIAN) sudah terisi "done" */
-  isDone: boolean;
+  /** Value of EDITOR column (empty = not done, any value = already processed) */
+  editorValue: string;
 }
 
 export interface ValidationResult {
@@ -62,39 +100,23 @@ export interface ValidationResult {
   reason?: string;
 }
 
-// ─── Spreadsheet: EKSPORT ───────────────────────────────────────────────────
-
-export interface EksportOrderData {
-  /** Row number (1-indexed) di sheet EKSPORT */
-  rowNumber: number;
-  /** Platform unique order ID (Kolom C) */
-  orderIdPlatform: string;
-  /** Variation dari Kolom K (e.g., "100 Pcs") — angka yang diekstrak */
-  variant: number;
-  /** Qty dari Kolom L */
-  qty: number;
-  /** Total foto yang diharapkan (variant × qty) */
-  expectedPhotos: number;
-  /** Tracking ID / Resi (Kolom AP) */
-  resi: string;
-}
-
 // ─── Processing Job ─────────────────────────────────────────────────────────
 
-export type JobStatus = 'queued' | 'downloading' | 'validating' | 'generating' | 'uploading' | 'marking' | 'moving' | 'done' | 'skipped' | 'error';
+export type JobStatus = 'queued' | 'downloading' | 'validating' | 'generating' | 'uploading' | 'marking' | 'done' | 'skipped' | 'error';
 
 export interface ProcessingJob {
   id: string;
   resi: string;
   variant: number;
-  dateFolderName: string;
-  dateFolderId: string;
+  qty: number;
+  /** Name of the shop this job belongs to */
+  shopName: string;
+  /** Drive folder ID of the order folder */
   orderFolderId: string;
   status: JobStatus;
   message: string;
   startedAt: number;
   completedAt?: number;
-  qty: number;
   /** Progress percentage 0-100 */
   progress: number;
 }
@@ -127,18 +149,20 @@ export interface WorkerState {
 export interface WorkerConfig {
   googleCredentialsPath: string;
   googleTokenPath: string;
+  /** Root PESANAN folder ID containing all shop folders */
   driveRootFolderId: string;
-  spreadsheetId: string;
-  sheetName: string;
-  eksportSheetName: string;
+  /** Array of shop configurations */
+  shops: ShopConfig[];
+  /** Text to write in the column after EDITOR (configurable via dashboard) */
+  editorText: string;
   pollIntervalMinutes: number;
   maxConcurrency: number;
   tempDir: string;
   enableFaceDetection: boolean;
   dryRun: boolean;
   serverPort: number;
+  /** Secondary Drive folder for uploading finished PDFs */
   secondaryDriveFolderId?: string;
-  targetDateFilter: string;
 }
 
 // ─── Logger ─────────────────────────────────────────────────────────────────
