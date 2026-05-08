@@ -250,9 +250,10 @@ export async function findFolderByName(
   parentFolderId: string,
   folderName: string
 ): Promise<DriveFolder | null> {
+  // First try exact match via API (fastest)
   const drive = getDriveClient();
 
-  const res = await drive.files.list({
+  const exactRes = await drive.files.list({
     q: `'${parentFolderId}' in parents and mimeType = '${MIME_FOLDER}' and name = '${folderName}' and trashed = false`,
     fields: 'files(id, name, modifiedTime)',
     pageSize: 1,
@@ -260,11 +261,36 @@ export async function findFolderByName(
     includeItemsFromAllDrives: true,
   });
 
-  if (res.data.files && res.data.files.length > 0) {
-    const f = res.data.files[0];
+  if (exactRes.data.files && exactRes.data.files.length > 0) {
+    const f = exactRes.data.files[0];
     if (f.id && f.name) {
       return { id: f.id, name: f.name, modifiedTime: f.modifiedTime || undefined };
     }
+  }
+
+  // Fallback: list all subfolders and match case-insensitively
+  const allFolders = await listSubfolders(parentFolderId);
+  const targetLower = folderName.toLowerCase();
+
+  // Try exact case-insensitive match
+  const ciMatch = allFolders.find(f => f.name.toLowerCase() === targetLower);
+  if (ciMatch) {
+    logger.debug('DRIVE', `Found "${ciMatch.name}" via case-insensitive match (searched: "${folderName}")`);
+    return ciMatch;
+  }
+
+  // Try contains match (e.g., "CustomeBase" matches "Toko CustomeBase")
+  const containsMatch = allFolders.find(f => f.name.toLowerCase().includes(targetLower));
+  if (containsMatch) {
+    logger.debug('DRIVE', `Found "${containsMatch.name}" via contains match (searched: "${folderName}")`);
+    return containsMatch;
+  }
+
+  // Try reverse contains (e.g., "Toko CustomeBase" matches folder named "CustomeBase")
+  const reverseMatch = allFolders.find(f => targetLower.includes(f.name.toLowerCase()));
+  if (reverseMatch) {
+    logger.debug('DRIVE', `Found "${reverseMatch.name}" via reverse-contains match (searched: "${folderName}")`);
+    return reverseMatch;
   }
 
   return null;

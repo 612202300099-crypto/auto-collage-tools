@@ -12,11 +12,12 @@ import type { ParsedOrder } from '../types.ts';
  * Regex explanation:
  *   ^(.+?)           → Capture group 1: resi (non-greedy, everything before last underscore+number)
  *   _                → Literal underscore separator
+ *   (?:Polaroid)?    → Optional "Polaroid" prefix (e.g., "Polaroid25")
  *   (\d+)            → Capture group 2: variant number
  *   (?:\s*Pcs)?      → Optional " Pcs" suffix (case-insensitive)
  *   $                → End of string
  */
-const FOLDER_NAME_REGEX = /^(.+?)_(\d+)(?:\s*Pcs)?$/i;
+const FOLDER_NAME_REGEX = /^(.+?)_(?:Polaroid)?(\d+)(?:\s*Pcs)?$/i;
 
 export function parseFolderName(folderName: string): ParsedOrder | null {
   const match = folderName.trim().match(FOLDER_NAME_REGEX);
