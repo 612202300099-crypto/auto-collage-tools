@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { 
   FolderSearch, 
   Users, 
@@ -14,7 +14,9 @@ import {
   X,
   Zap,
   Star,
-  Palette
+  Palette,
+  Archive,
+  Upload
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { generateCollageLocal, generateCollagePreview } from './utils/collageGenerator';
@@ -22,6 +24,7 @@ import { buildAndDownloadPDF } from './utils/pdfExporter';
 import type { SheetInput } from './utils/pdfExporter';
 import type { AIEngine } from './utils/aiService';
 import { generateRandomBatchColor } from './utils/colorUtils';
+import { extractZip, isZipFile, type ZipExtractionProgress } from './utils/zipExtractor';
 
 interface LocalPackage {
   name: string;
@@ -45,21 +48,33 @@ export default function App() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [batchColor, setBatchColor] = useState<string | null>(null);
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [extractionProgress, setExtractionProgress] = useState<ZipExtractionProgress | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const zipInputRef = useRef<HTMLInputElement>(null);
+  const dropZoneRef = useRef<HTMLDivElement>(null);
 
-  const handleFolderSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
+  /**
+   * processFiles — Shared logic for grouping File[] into LocalPackage[].
+   * Used by both folder select and ZIP extract flows.
+   * Files must have a webkitRelativePath property for subfolder grouping.
+   */
+  const processFiles = useCallback((files: File[]) => {
     if (files.length === 0) return;
 
     const groups: { [key: string]: File[] } = {};
     
-    files.forEach((file: any) => {
-      const isImage = file.type.startsWith('image/') || file.name.toLowerCase().match(/\.(heic|heif|webp|jpg|jpeg|png)$/i);
+    files.forEach((file) => {
+      const isImage = file.type.startsWith('image/') || /\.(heic|heif|webp|jpg|jpeg|png|bmp|tiff?)$/i.test(file.name);
       if (!isImage) return;
-      const pathParts = (file as any).webkitRelativePath.split('/');
+
+      const relativePath = (file as unknown as { webkitRelativePath: string }).webkitRelativePath || '';
+      const pathParts = relativePath.split('/');
       const folderName = pathParts.length >= 2 ? pathParts[pathParts.length - 2] : 'Main Folder';
+
       if (!groups[folderName]) groups[folderName] = [];
-      groups[folderName].push(file as File);
+      groups[folderName].push(file);
     });
 
     const newPackages: LocalPackage[] = [];
@@ -87,7 +102,99 @@ export default function App() {
 
     setPackages(newPackages);
     setProgress({ current: 0, total: 0, log: [] });
-  };
+  }, []);
+
+  /** Handle native folder selection via webkitdirectory input */
+  const handleFolderSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    processFiles(files);
+    // Reset input value so re-selecting the same folder works
+    if (e.target) e.target.value = '';
+  }, [processFiles]);
+
+  /** Handle ZIP file upload — extract and feed into the same pipeline */
+  const handleZipUpload = useCallback(async (zipFile: File) => {
+    setIsExtracting(true);
+    setExtractionProgress({ phase: 'reading', percent: 0, message: 'Memulai...' });
+
+    try {
+      const result = await extractZip(zipFile, (progress) => {
+        setExtractionProgress(progress);
+      });
+
+      processFiles(result.files);
+
+      setProgress(prev => ({
+        ...prev,
+        log: [
+          `[SYSTEM] ZIP Extracted: ${result.imageCount} gambar dari ${zipFile.name}` +
+            (result.skippedCount > 0 ? ` (${result.skippedCount} file dilewati)` : ''),
+          ...prev.log,
+        ],
+      }));
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Gagal mengekstrak ZIP';
+      setProgress(prev => ({
+        ...prev,
+        log: [`[ERROR] ${message}`, ...prev.log],
+      }));
+    } finally {
+      setIsExtracting(false);
+      setExtractionProgress(null);
+    }
+  }, [processFiles]);
+
+  /** Handle ZIP input change event */
+  const handleZipInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) handleZipUpload(file);
+    if (e.target) e.target.value = '';
+  }, [handleZipUpload]);
+
+  // ─── Drag & Drop Handlers ───────────────────────────────────────────
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Only set false if we've actually left the drop zone
+    const rect = dropZoneRef.current?.getBoundingClientRect();
+    if (rect) {
+      const { clientX, clientY } = e;
+      if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
+        setIsDragOver(false);
+      }
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+
+    const items = e.dataTransfer.files;
+    if (!items || items.length === 0) return;
+
+    // Check if dropped file is a ZIP
+    const firstFile = items[0];
+    if (isZipFile(firstFile)) {
+      await handleZipUpload(firstFile);
+      return;
+    }
+
+    // Otherwise treat as image files (dropped from a folder)
+    const files = Array.from(items);
+    processFiles(files);
+  }, [handleZipUpload, processFiles]);
   
   const recalculateIndices = (pkgs: LocalPackage[]) => {
     return pkgs.map((pkg, idx, arr) => ({
@@ -265,15 +372,87 @@ export default function App() {
                   <FolderSearch className="w-3 h-3" /> Source Selection
                 </label>
                 
+                {/* Hidden file inputs */}
                 <input type="file" ref={fileInputRef} onChange={handleFolderSelect} className="hidden" {...({ webkitdirectory: "", directory: "" } as any)} />
-                <button onClick={() => fileInputRef.current?.click()} className="w-full group relative overflow-hidden bg-zinc-900 border border-zinc-800 rounded-lg p-8 flex flex-col items-center gap-4 hover:border-yellow-500/50 transition-all active:scale-95">
-                  <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-yellow-500/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
-                  <FolderSearch className="w-10 h-10 text-zinc-600 group-hover:text-yellow-500 transition-colors" />
-                  <div className="text-center">
-                    <p className="text-sm font-bold uppercase tracking-tight">Pilih Folder Lokal</p>
-                    <p className="text-[10px] text-zinc-500 font-mono mt-1">Automatic subfolder grouping</p>
-                  </div>
-                </button>
+                <input type="file" ref={zipInputRef} onChange={handleZipInputChange} className="hidden" accept=".zip" />
+
+                {/* Dual upload buttons */}
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isExtracting}
+                    className="group relative overflow-hidden bg-zinc-900 border border-zinc-800 rounded-lg p-5 flex flex-col items-center gap-3 hover:border-yellow-500/50 transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <div className="absolute top-0 left-0 w-full h-0.5 bg-gradient-to-r from-transparent via-yellow-500/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                    <FolderSearch className="w-8 h-8 text-zinc-600 group-hover:text-yellow-500 transition-colors" />
+                    <div className="text-center">
+                      <p className="text-xs font-bold uppercase tracking-tight">Folder</p>
+                      <p className="text-[9px] text-zinc-600 font-mono mt-0.5">Subfolder grouping</p>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={() => zipInputRef.current?.click()}
+                    disabled={isExtracting}
+                    className="group relative overflow-hidden bg-zinc-900 border border-zinc-800 rounded-lg p-5 flex flex-col items-center gap-3 hover:border-cyan-500/50 transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <div className="absolute top-0 left-0 w-full h-0.5 bg-gradient-to-r from-transparent via-cyan-500/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                    <Archive className="w-8 h-8 text-zinc-600 group-hover:text-cyan-500 transition-colors" />
+                    <div className="text-center">
+                      <p className="text-xs font-bold uppercase tracking-tight">ZIP File</p>
+                      <p className="text-[9px] text-zinc-600 font-mono mt-0.5">Auto extract & group</p>
+                    </div>
+                  </button>
+                </div>
+
+                {/* Drag & Drop Zone */}
+                <div
+                  ref={dropZoneRef}
+                  onDragEnter={handleDragEnter}
+                  onDragLeave={handleDragLeave}
+                  onDragOver={handleDragOver}
+                  onDrop={handleDrop}
+                  className={`relative rounded-lg border-2 border-dashed p-4 flex items-center justify-center gap-3 transition-all duration-200 ${
+                    isDragOver
+                      ? 'border-yellow-500 bg-yellow-500/5 scale-[1.02]'
+                      : 'border-zinc-800 bg-black/20 hover:border-zinc-700'
+                  } ${isExtracting ? 'pointer-events-none opacity-40' : 'cursor-pointer'}`}
+                  onClick={() => !isExtracting && zipInputRef.current?.click()}
+                >
+                  <Upload className={`w-4 h-4 transition-colors ${isDragOver ? 'text-yellow-500' : 'text-zinc-700'}`} />
+                  <p className={`text-[10px] font-mono uppercase tracking-wider transition-colors ${isDragOver ? 'text-yellow-500' : 'text-zinc-600'}`}>
+                    {isDragOver ? 'Lepas untuk upload' : 'Drag & drop folder atau ZIP di sini'}
+                  </p>
+                </div>
+
+                {/* ZIP Extraction Progress Overlay */}
+                <AnimatePresence>
+                  {isExtracting && extractionProgress && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -5 }}
+                      className="rounded-lg border border-cyan-500/30 bg-cyan-500/5 p-4 space-y-3"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Loader2 className="w-4 h-4 text-cyan-500 animate-spin" />
+                        <span className="text-xs font-mono text-cyan-500 uppercase tracking-wide">Extracting ZIP</span>
+                      </div>
+                      {/* Progress bar */}
+                      <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                        <motion.div
+                          className="h-full bg-gradient-to-r from-cyan-500 to-yellow-500 rounded-full"
+                          initial={{ width: '0%' }}
+                          animate={{ width: `${extractionProgress.percent}%` }}
+                          transition={{ duration: 0.3, ease: 'easeOut' }}
+                        />
+                      </div>
+                      <p className="text-[9px] font-mono text-zinc-500 truncate">
+                        {extractionProgress.message}
+                      </p>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
             </div>
           </div>
