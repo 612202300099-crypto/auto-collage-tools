@@ -10,3 +10,4 @@ coverage/
 # Worker automation
 credentials/
 .tmp-worker/
+dotted-spot-*.json

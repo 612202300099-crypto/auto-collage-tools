@@ -195,7 +195,10 @@ async function resolveShop(
     // Find the shop folder inside root PESANAN folder
     const shopFolder = await driveService.findFolderByName(rootFolderId, shopName);
     if (!shopFolder) {
-      logger.warn('ORCH', `[${shopName}] Shop folder not found in Drive root. Skipping.`);
+      // Debug: show what folders ARE in the root so user can fix shop name
+      const allFolders = await driveService.listSubfolders(rootFolderId);
+      const folderNames = allFolders.map(f => `"${f.name}"`).join(', ');
+      logger.warn('ORCH', `[${shopName}] Shop folder not found in Drive root. Available folders: [${folderNames}]`);
       return null;
     }
 
@@ -280,11 +283,34 @@ async function processOrder(
     }
 
     const order = validation.order!;
-    const expectedPhotos = order.expectedPhotos;
-    state.updateJob(jobId, { qty: order.qty, message: `Validated: ${variant} × ${order.qty} = ${expectedPhotos} photos` });
+    const requiredPhotos = order.variant; // Unique photos needed (e.g., 25)
+    const qty = order.qty;               // Number of copies (e.g., 2x print)
 
-    // ── Step 3: Download images ───────────────────────────────────────
-    state.updateJob(jobId, { status: 'downloading', message: 'Downloading images...', progress: 20 });
+    state.updateJob(jobId, { qty, message: `Validated: ${requiredPhotos} photos × ${qty} copies` });
+    logger.info('ORCH', `[${shopName}] ${resi}: Validated — need ${requiredPhotos} photos, ${qty} copies`);
+
+    // ── Step 3: Count images first (pre-check without downloading) ────
+    state.updateJob(jobId, { status: 'downloading', message: 'Counting images...', progress: 20 });
+
+    const imageCount = await driveService.countImagesInFolder(orderFolderId);
+
+    if (imageCount === 0) {
+      logger.info('ORCH', `[${shopName}] SKIP ${resi}: No images in folder`);
+      state.updateJob(jobId, { status: 'skipped', message: 'No images found in folder', progress: 100 });
+      state.completeJob(jobId, 'skipped');
+      return;
+    }
+
+    // ── Step 3b: Check if enough photos ───────────────────────────────
+    if (imageCount < requiredPhotos) {
+      logger.info('ORCH', `[${shopName}] SKIP ${resi}: Not enough photos (${imageCount}/${requiredPhotos}) — order incomplete`);
+      state.updateJob(jobId, { status: 'skipped', message: `Incomplete: ${imageCount}/${requiredPhotos} photos`, progress: 100 });
+      state.completeJob(jobId, 'skipped');
+      return;
+    }
+
+    // ── Step 4: Download images ───────────────────────────────────────
+    state.updateJob(jobId, { status: 'downloading', message: `Downloading ${requiredPhotos} images...`, progress: 30 });
 
     const tempDir = path.join(config.tempDir, `${shopName}_${resi}_${Date.now()}`);
     let localPaths: string[];
@@ -296,20 +322,14 @@ async function processOrder(
       throw new Error(`Download failed: ${msg}`);
     }
 
-    if (localPaths.length === 0) {
-      state.updateJob(jobId, { status: 'skipped', message: 'No images found in folder', progress: 100 });
-      state.completeJob(jobId, 'skipped');
-      cleanup(tempDir);
-      return;
+    // ── Step 4b: Trim to exactly `variant` photos (not variant×qty) ──
+    // qty is for PDF page duplication (copies), NOT extra photos
+    if (localPaths.length > requiredPhotos) {
+      logger.info('ORCH', `[${shopName}] ${resi}: ${localPaths.length} photos found, using first ${requiredPhotos} (variant count)`);
+      localPaths = localPaths.slice(0, requiredPhotos);
     }
 
-    // ── Step 3b: Trim photos if more than expected ────────────────────
-    if (localPaths.length > expectedPhotos) {
-      logger.info('ORCH', `[${shopName}] ${resi}: ${localPaths.length} photos found, trimming to ${expectedPhotos} (variant × qty)`);
-      localPaths = localPaths.slice(0, expectedPhotos);
-    }
-
-    logger.info('ORCH', `[${shopName}] ${resi}: Downloaded ${localPaths.length} images`);
+    logger.info('ORCH', `[${shopName}] ${resi}: Using ${localPaths.length} photos × ${qty} copies`);
 
     // ── Step 4: Generate PDF ──────────────────────────────────────────
     state.updateJob(jobId, { status: 'generating', message: `Generating PDF (${localPaths.length} photos)...`, progress: 40 });
