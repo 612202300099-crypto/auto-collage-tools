@@ -324,22 +324,19 @@ async function processOrder(
     }
 
     // ── Step 4: Download images ───────────────────────────────────────
-    state.updateJob(jobId, { status: 'downloading', message: `Downloading ${photosToUse} images...`, progress: 30 });
+    state.updateJob(jobId, { status: 'downloading', message: `Downloading ${photosToUse} images (newest first)...`, progress: 30 });
 
     const tempDir = path.join(config.tempDir, `${shopName}_${resi}_${Date.now()}`);
     let localPaths: string[];
 
     try {
-      localPaths = await driveService.downloadImages(orderFolderId, tempDir);
+      localPaths = await driveService.downloadImages(orderFolderId, tempDir, {
+        limit: photosToUse,
+        sortByNewest: true,
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(`Download failed: ${msg}`);
-    }
-
-    // ── Step 4b: Trim to exactly `photosToUse` (variant or stale count) ──
-    if (localPaths.length > photosToUse) {
-      logger.info('ORCH', `[${shopName}] ${resi}: ${localPaths.length} downloaded, using first ${photosToUse}`);
-      localPaths = localPaths.slice(0, photosToUse);
     }
 
     logger.info('ORCH', `[${shopName}] ${resi}: Using ${localPaths.length} photos × ${qty} copies`);

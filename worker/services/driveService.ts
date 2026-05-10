@@ -173,12 +173,31 @@ export async function checkOutputExists(dateFolderId: string, resi: string, vari
 }
 
 /**
- * Download all images from a Drive folder to a local temp directory.
- * Returns array of local file paths, sorted by name.
+ * Download images from a Drive folder to a local temp directory.
+ * @param options.limit Max number of images to download.
+ * @param options.sortByNewest If true, sorts by modifiedTime descending before limiting.
+ * Returns array of local file paths, sorted by name (or time if sortByNewest).
  */
-export async function downloadImages(folderId: string, destDir: string): Promise<string[]> {
-  const files = await listImageFiles(folderId);
+export async function downloadImages(
+  folderId: string,
+  destDir: string,
+  options?: { limit?: number; sortByNewest?: boolean }
+): Promise<string[]> {
+  let files = await listImageFiles(folderId);
   if (files.length === 0) return [];
+
+  // Sort and limit files before downloading
+  if (options?.sortByNewest) {
+    files.sort((a, b) => {
+      const timeA = a.modifiedTime ? new Date(a.modifiedTime).getTime() : 0;
+      const timeB = b.modifiedTime ? new Date(b.modifiedTime).getTime() : 0;
+      return timeB - timeA; // Descending (newest first)
+    });
+  }
+
+  if (options?.limit && files.length > options.limit) {
+    files = files.slice(0, options.limit);
+  }
 
   // Ensure dest directory exists
   if (!fs.existsSync(destDir)) {
@@ -188,7 +207,8 @@ export async function downloadImages(folderId: string, destDir: string): Promise
   const localPaths: string[] = [];
 
   for (const file of files) {
-    const destPath = path.join(destDir, file.name);
+    // Prefix with file.id to ensure completely unique local filenames (prevent overwrites)
+    const destPath = path.join(destDir, `${file.id}_${file.name}`);
 
     try {
       const drive = getDriveClient();
@@ -212,8 +232,10 @@ export async function downloadImages(folderId: string, destDir: string): Promise
     }
   }
 
-  // Sort by filename for consistent ordering
-  localPaths.sort((a, b) => path.basename(a).localeCompare(path.basename(b)));
+  // If we sorted by newest, we keep that order. Otherwise, sort alphabetically.
+  if (!options?.sortByNewest) {
+    localPaths.sort((a, b) => path.basename(a).localeCompare(path.basename(b)));
+  }
 
   return localPaths;
 }
