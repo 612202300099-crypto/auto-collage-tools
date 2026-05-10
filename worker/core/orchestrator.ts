@@ -161,16 +161,19 @@ async function processShop(shopConfig: ShopConfig, config: WorkerConfig): Promis
       }
     }
 
-    const tasks: Array<{ resi: string; folderIds: string[]; rawNames: string[] }> = [];
+    const tasks: Array<{ resi: string; lockKey: string; folderIds: string[]; rawNames: string[] }> = [];
 
     for (const [resi, data] of orderMap.entries()) {
-      // In-memory lock check (prevent duplicate within same cycle)
+      // In-memory lock check: prevent duplicate queuing (whether running or waiting in queue)
       const lockKey = `${shopName}:${resi}`;
       if (processingLocks.has(lockKey)) {
-        logger.debug('ORCH', `[${shopName}] Already processing: ${resi}`);
+        logger.debug('ORCH', `[${shopName}] Already processing/queued: ${resi}`);
         continue;
       }
-      tasks.push({ resi, ...data });
+      
+      // Acquire lock immediately so subsequent scans won't queue it again
+      processingLocks.add(lockKey);
+      tasks.push({ resi, lockKey, ...data });
     }
 
     if (tasks.length === 0) {
@@ -182,12 +185,11 @@ async function processShop(shopConfig: ShopConfig, config: WorkerConfig): Promis
 
     // 4. Execute all orders with concurrency pool
     await pool!.executeAll(
-      tasks.map(({ resi, folderIds, rawNames }) => async () => {
-        const lockKey = `${shopName}:${resi}`;
-        processingLocks.add(lockKey);
+      tasks.map(({ resi, lockKey, folderIds, rawNames }) => async () => {
         try {
           await processOrder(resolvedShop, resi, folderIds, rawNames, config);
         } finally {
+          // Release lock only after execution completes (success or failure)
           processingLocks.delete(lockKey);
         }
       }),
