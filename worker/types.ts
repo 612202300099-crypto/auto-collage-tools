@@ -18,6 +18,7 @@ export interface DriveFile {
   name: string;
   mimeType: string;
   size?: number;
+  modifiedTime?: string;
 }
 
 // ─── Shop Configuration ─────────────────────────────────────────────────────
@@ -157,6 +158,8 @@ export interface WorkerConfig {
   editorText: string;
   pollIntervalMinutes: number;
   maxConcurrency: number;
+  /** Minutes after last upload to consider an incomplete order as "stale" (ready to process) */
+  staleTimeoutMinutes: number;
   tempDir: string;
   enableFaceDetection: boolean;
   dryRun: boolean;

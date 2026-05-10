@@ -289,28 +289,42 @@ async function processOrder(
     state.updateJob(jobId, { qty, message: `Validated: ${requiredPhotos} photos × ${qty} copies` });
     logger.info('ORCH', `[${shopName}] ${resi}: Validated — need ${requiredPhotos} photos, ${qty} copies`);
 
-    // ── Step 3: Count images first (pre-check without downloading) ────
-    state.updateJob(jobId, { status: 'downloading', message: 'Counting images...', progress: 20 });
+    // ── Step 3: Inspect folder (count + stale check in 1 API call) ────
+    state.updateJob(jobId, { status: 'downloading', message: 'Inspecting folder...', progress: 20 });
 
-    const imageCount = await driveService.countImagesInFolder(orderFolderId);
+    const inspection = await driveService.inspectFolder(orderFolderId);
 
-    if (imageCount === 0) {
+    // 3a: No images at all → skip
+    if (inspection.count === 0) {
       logger.info('ORCH', `[${shopName}] SKIP ${resi}: No images in folder`);
       state.updateJob(jobId, { status: 'skipped', message: 'No images found in folder', progress: 100 });
       state.completeJob(jobId, 'skipped');
       return;
     }
 
-    // ── Step 3b: Check if enough photos ───────────────────────────────
-    if (imageCount < requiredPhotos) {
-      logger.info('ORCH', `[${shopName}] SKIP ${resi}: Not enough photos (${imageCount}/${requiredPhotos}) — order incomplete`);
-      state.updateJob(jobId, { status: 'skipped', message: `Incomplete: ${imageCount}/${requiredPhotos} photos`, progress: 100 });
-      state.completeJob(jobId, 'skipped');
-      return;
+    // 3b: Check if enough photos OR stale (last upload was long ago)
+    let photosToUse = requiredPhotos;
+
+    if (inspection.count < requiredPhotos) {
+      const minutesAgo = inspection.minutesSinceLastUpload;
+      const staleThreshold = config.staleTimeoutMinutes;
+
+      if (minutesAgo !== null && minutesAgo >= staleThreshold) {
+        // STALE: foto kurang tapi sudah lama tidak ada upload baru → proses dengan yang ada
+        photosToUse = inspection.count;
+        logger.info('ORCH', `[${shopName}] ${resi}: Incomplete (${inspection.count}/${requiredPhotos}) but STALE — last upload ${minutesAgo} min ago (threshold: ${staleThreshold} min). Processing with ${inspection.count} photos.`);
+      } else {
+        // FRESH: masih mungkin uploading → skip, tunggu cycle berikutnya
+        const timeInfo = minutesAgo !== null ? `last upload ${minutesAgo} min ago` : 'unknown upload time';
+        logger.info('ORCH', `[${shopName}] SKIP ${resi}: Incomplete (${inspection.count}/${requiredPhotos}), ${timeInfo} — waiting for more photos`);
+        state.updateJob(jobId, { status: 'skipped', message: `Waiting: ${inspection.count}/${requiredPhotos} photos, ${timeInfo}`, progress: 100 });
+        state.completeJob(jobId, 'skipped');
+        return;
+      }
     }
 
     // ── Step 4: Download images ───────────────────────────────────────
-    state.updateJob(jobId, { status: 'downloading', message: `Downloading ${requiredPhotos} images...`, progress: 30 });
+    state.updateJob(jobId, { status: 'downloading', message: `Downloading ${photosToUse} images...`, progress: 30 });
 
     const tempDir = path.join(config.tempDir, `${shopName}_${resi}_${Date.now()}`);
     let localPaths: string[];
@@ -322,11 +336,10 @@ async function processOrder(
       throw new Error(`Download failed: ${msg}`);
     }
 
-    // ── Step 4b: Trim to exactly `variant` photos (not variant×qty) ──
-    // qty is for PDF page duplication (copies), NOT extra photos
-    if (localPaths.length > requiredPhotos) {
-      logger.info('ORCH', `[${shopName}] ${resi}: ${localPaths.length} photos found, using first ${requiredPhotos} (variant count)`);
-      localPaths = localPaths.slice(0, requiredPhotos);
+    // ── Step 4b: Trim to exactly `photosToUse` (variant or stale count) ──
+    if (localPaths.length > photosToUse) {
+      logger.info('ORCH', `[${shopName}] ${resi}: ${localPaths.length} downloaded, using first ${photosToUse}`);
+      localPaths = localPaths.slice(0, photosToUse);
     }
 
     logger.info('ORCH', `[${shopName}] ${resi}: Using ${localPaths.length} photos × ${qty} copies`);

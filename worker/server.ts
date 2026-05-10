@@ -64,7 +64,7 @@ export function createServer(config: WorkerConfig) {
 
   // ─── API: Update configuration ────────────────────────────────────────
   app.post('/api/config', (req, res) => {
-    const { maxConcurrency, pollIntervalMinutes, secondaryDriveFolderId, editorText } = req.body;
+    const { maxConcurrency, pollIntervalMinutes, secondaryDriveFolderId, editorText, staleTimeoutMinutes } = req.body;
     const envUpdates: Record<string, string> = {};
 
     if (maxConcurrency !== undefined) {
@@ -102,6 +102,15 @@ export function createServer(config: WorkerConfig) {
       logger.info('API', `Editor Text updated to "${config.editorText}"`);
     }
 
+    if (staleTimeoutMinutes !== undefined) {
+      const n = parseInt(staleTimeoutMinutes, 10);
+      if (n >= 10 && n <= 1440) {
+        config.staleTimeoutMinutes = n;
+        envUpdates['STALE_TIMEOUT_MINUTES'] = n.toString();
+        logger.info('API', `Stale timeout updated to ${n} minutes`);
+      }
+    }
+
     if (Object.keys(envUpdates).length > 0) {
       try {
         saveConfig(envUpdates);
@@ -118,6 +127,7 @@ export function createServer(config: WorkerConfig) {
         pollIntervalMinutes: config.pollIntervalMinutes,
         secondaryDriveFolderId: config.secondaryDriveFolderId,
         editorText: config.editorText,
+        staleTimeoutMinutes: config.staleTimeoutMinutes,
       },
     });
   });
@@ -132,6 +142,7 @@ export function createServer(config: WorkerConfig) {
       driveRootFolderId: config.driveRootFolderId,
       secondaryDriveFolderId: config.secondaryDriveFolderId,
       editorText: config.editorText,
+      staleTimeoutMinutes: config.staleTimeoutMinutes,
       shops: config.shops.map(s => ({ name: s.name, spreadsheetId: s.spreadsheetId })),
     });
   });

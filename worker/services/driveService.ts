@@ -61,6 +61,7 @@ export async function listSubfolders(parentFolderId: string): Promise<DriveFolde
 
 /**
  * List all image files inside a folder (non-recursive).
+ * Includes modifiedTime for stale detection.
  */
 export async function listImageFiles(folderId: string): Promise<DriveFile[]> {
   const drive = getDriveClient();
@@ -72,7 +73,7 @@ export async function listImageFiles(folderId: string): Promise<DriveFile[]> {
   do {
     const res = await drive.files.list({
       q: `'${folderId}' in parents and (${mimeQuery}) and trashed = false`,
-      fields: 'nextPageToken, files(id, name, mimeType, size)',
+      fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime)',
       orderBy: 'name',
       pageSize: 200,
       pageToken,
@@ -88,6 +89,7 @@ export async function listImageFiles(folderId: string): Promise<DriveFile[]> {
             name: f.name,
             mimeType: f.mimeType,
             size: f.size ? parseInt(f.size, 10) : undefined,
+            modifiedTime: f.modifiedTime || undefined,
           });
         }
       }
@@ -99,8 +101,52 @@ export async function listImageFiles(folderId: string): Promise<DriveFile[]> {
 }
 
 /**
+ * Inspect a folder: count images + find the latest modified time.
+ * Single API call that provides everything needed for stale detection.
+ *
+ * Returns:
+ *   - count: number of images
+ *   - lastModifiedAt: Date of the most recently modified image (or null)
+ *   - minutesSinceLastUpload: how many minutes since the latest image was modified
+ */
+export interface FolderInspection {
+  count: number;
+  lastModifiedAt: Date | null;
+  minutesSinceLastUpload: number | null;
+}
+
+export async function inspectFolder(folderId: string): Promise<FolderInspection> {
+  const files = await listImageFiles(folderId);
+
+  if (files.length === 0) {
+    return { count: 0, lastModifiedAt: null, minutesSinceLastUpload: null };
+  }
+
+  // Find the most recently modified file
+  let latestTime: Date | null = null;
+  for (const f of files) {
+    if (f.modifiedTime) {
+      const t = new Date(f.modifiedTime);
+      if (!latestTime || t > latestTime) {
+        latestTime = t;
+      }
+    }
+  }
+
+  const minutesSinceLastUpload = latestTime
+    ? Math.round((Date.now() - latestTime.getTime()) / 60_000)
+    : null;
+
+  return {
+    count: files.length,
+    lastModifiedAt: latestTime,
+    minutesSinceLastUpload,
+  };
+}
+
+/**
  * Count images in a folder without downloading them.
- * Used for pre-validation (is the order complete?).
+ * Simple wrapper — use inspectFolder() if you also need stale info.
  */
 export async function countImagesInFolder(folderId: string): Promise<number> {
   const files = await listImageFiles(folderId);

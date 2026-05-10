@@ -95,6 +95,7 @@ export function loadConfig(): WorkerConfig {
     editorText: process.env.EDITOR_TEXT || '',
     pollIntervalMinutes: parseInt(process.env.POLL_INTERVAL_MINUTES || '5', 10),
     maxConcurrency: parseInt(process.env.MAX_CONCURRENCY || '5', 10),
+    staleTimeoutMinutes: parseInt(process.env.STALE_TIMEOUT_MINUTES || '60', 10),
     tempDir: path.resolve(import.meta.dirname, '..', '.tmp-worker'),
     enableFaceDetection: process.env.ENABLE_FACE_DETECTION !== 'false',
     dryRun: process.env.DRY_RUN === 'true',
