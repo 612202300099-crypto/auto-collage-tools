@@ -36,6 +36,19 @@ export function parseFolderName(folderName: string): ParsedOrder | null {
 }
 
 /**
+ * Safely extract only the Resi number from any folder name format.
+ * Examples:
+ *   "JX12345_NOSKU"       → "JX12345"
+ *   "JX12345_Polaroid100" → "JX12345"
+ *   "JX12345"             → "JX12345"
+ */
+export function extractResi(folderName: string): string | null {
+  if (!folderName) return null;
+  const resi = folderName.split('_')[0].trim();
+  return resi.length > 0 ? resi : null;
+}
+
+/**
  * Build the expected output filename.
  * "JX9171527480" + 25 → "Cetak_JX9171527480_25.pdf"
  */

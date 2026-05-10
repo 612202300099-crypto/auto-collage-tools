@@ -19,6 +19,7 @@ export interface DriveFile {
   mimeType: string;
   size?: number;
   modifiedTime?: string;
+  md5Checksum?: string;
 }
 
 // ─── Shop Configuration ─────────────────────────────────────────────────────
@@ -48,6 +49,8 @@ export interface ShopConfig {
   sheetName: string;
   /** Name of the product folder to scan inside the shop folder (default: "POLAROID") */
   polaroidFolderName: string;
+  /** Name of the fallback/alternative folder to scan (default: "LAINNYA") */
+  lainnyaFolderName?: string;
   /** Column mapping — auto-detected at runtime, but can be overridden */
   columns?: ShopColumnMapping;
 }
@@ -61,6 +64,8 @@ export interface ResolvedShop extends ShopConfig {
   shopFolderId: string;
   /** Drive folder ID for the POLAROID subfolder (discovered from shop folder) */
   polaroidFolderId: string;
+  /** Drive folder ID for the LAINNYA subfolder (if found) */
+  lainnyaFolderId?: string;
   /** Auto-detected column mapping from spreadsheet header */
   columns: ShopColumnMapping;
 }

@@ -12,7 +12,7 @@
 import fs from 'fs';
 import path from 'path';
 import { logger } from '../utils/logger.ts';
-import { parseFolderName, buildOutputFileName } from '../utils/folderParser.ts';
+import { parseFolderName, buildOutputFileName, extractResi } from '../utils/folderParser.ts';
 import { generateRandomBatchColor } from './colorUtils.ts';
 import * as driveService from '../services/driveService.ts';
 import * as sheetsService from '../services/sheetsService.ts';
@@ -129,30 +129,48 @@ async function processShop(shopConfig: ShopConfig, config: WorkerConfig): Promis
     const resolvedShop = await resolveShop(shopConfig, config.driveRootFolderId);
     if (!resolvedShop) return; // Error already logged
 
-    // 2. List order subfolders inside POLAROID folder
-    const orderFolders = await driveService.listSubfolders(resolvedShop.polaroidFolderId);
-    logger.info('ORCH', `[${shopName}] Found ${orderFolders.length} folders in ${shopConfig.polaroidFolderName}`);
+    // 2. List order subfolders inside POLAROID and LAINNYA folders
+    const polaroidFolders = await driveService.listSubfolders(resolvedShop.polaroidFolderId);
+    const lainnyaFolders = resolvedShop.lainnyaFolderId 
+      ? await driveService.listSubfolders(resolvedShop.lainnyaFolderId) 
+      : [];
+    
+    const totalFound = polaroidFolders.length + lainnyaFolders.length;
+    logger.info('ORCH', `[${shopName}] Found ${polaroidFolders.length} folders in ${shopConfig.polaroidFolderName}` + 
+      (resolvedShop.lainnyaFolderId ? ` and ${lainnyaFolders.length} in ${shopConfig.lainnyaFolderName || 'LAINNYA'}` : '')
+    );
 
-    if (orderFolders.length === 0) return;
+    if (totalFound === 0) return;
 
-    // 3. Parse & filter valid order folder names
-    const tasks: Array<{ parsed: ParsedOrder; folderId: string }> = [];
+    // 3. Group folders by Resi
+    const orderMap = new Map<string, { folderIds: string[]; rawNames: string[] }>();
+    const allFolders = [...polaroidFolders, ...lainnyaFolders];
 
-    for (const folder of orderFolders) {
-      const parsed = parseFolderName(folder.name);
-      if (!parsed) {
+    for (const folder of allFolders) {
+      const resi = extractResi(folder.name);
+      if (!resi) {
         logger.debug('ORCH', `[${shopName}] Skipping non-order folder: "${folder.name}"`);
         continue;
       }
 
+      if (orderMap.has(resi)) {
+        orderMap.get(resi)!.folderIds.push(folder.id);
+        orderMap.get(resi)!.rawNames.push(folder.name);
+      } else {
+        orderMap.set(resi, { folderIds: [folder.id], rawNames: [folder.name] });
+      }
+    }
+
+    const tasks: Array<{ resi: string; folderIds: string[]; rawNames: string[] }> = [];
+
+    for (const [resi, data] of orderMap.entries()) {
       // In-memory lock check (prevent duplicate within same cycle)
-      const lockKey = `${shopName}:${parsed.resi}`;
+      const lockKey = `${shopName}:${resi}`;
       if (processingLocks.has(lockKey)) {
-        logger.debug('ORCH', `[${shopName}] Already processing: ${parsed.resi}`);
+        logger.debug('ORCH', `[${shopName}] Already processing: ${resi}`);
         continue;
       }
-
-      tasks.push({ parsed, folderId: folder.id });
+      tasks.push({ resi, ...data });
     }
 
     if (tasks.length === 0) {
@@ -160,15 +178,15 @@ async function processShop(shopConfig: ShopConfig, config: WorkerConfig): Promis
       return;
     }
 
-    logger.info('ORCH', `[${shopName}] ${tasks.length} order(s) to evaluate`);
+    logger.info('ORCH', `[${shopName}] ${tasks.length} unique order(s) to evaluate`);
 
     // 4. Execute all orders with concurrency pool
     await pool!.executeAll(
-      tasks.map(({ parsed, folderId }) => async () => {
-        const lockKey = `${shopName}:${parsed.resi}`;
+      tasks.map(({ resi, folderIds, rawNames }) => async () => {
+        const lockKey = `${shopName}:${resi}`;
         processingLocks.add(lockKey);
         try {
-          await processOrder(resolvedShop, parsed, folderId, config);
+          await processOrder(resolvedShop, resi, folderIds, rawNames, config);
         } finally {
           processingLocks.delete(lockKey);
         }
@@ -209,6 +227,15 @@ async function resolveShop(
       return null;
     }
 
+    // Find the LAINNYA subfolder inside the shop folder (optional fallback)
+    let lainnyaFolderId: string | undefined;
+    if (shopConfig.lainnyaFolderName) {
+      const lainnyaFolder = await driveService.findFolderByName(shopFolder.id, shopConfig.lainnyaFolderName);
+      if (lainnyaFolder) {
+        lainnyaFolderId = lainnyaFolder.id;
+      }
+    }
+
     // Auto-detect EDITOR column (or use override from config)
     const columns = shopConfig.columns ||
       await sheetsService.detectEditorColumn(shopConfig.spreadsheetId, shopConfig.sheetName);
@@ -217,6 +244,7 @@ async function resolveShop(
       ...shopConfig,
       shopFolderId: shopFolder.id,
       polaroidFolderId: polaroidFolder.id,
+      lainnyaFolderId,
       columns,
     };
   } catch (err: unknown) {
@@ -233,22 +261,22 @@ async function resolveShop(
  */
 async function processOrder(
   shop: ResolvedShop,
-  parsed: ParsedOrder,
-  orderFolderId: string,
+  resi: string,
+  folderIds: string[],
+  rawNames: string[],
   config: WorkerConfig,
 ): Promise<void> {
-  const { resi, variant } = parsed;
   const shopName = shop.name;
   const jobId = `${shopName}:${resi}:${Date.now()}`;
 
-  // Create job tracking entry
+  // Create job tracking entry (variant is unknown at first)
   const job = state.addJob({
     id: jobId,
     resi,
-    variant,
+    variant: 0,
     qty: 1,
     shopName,
-    orderFolderId,
+    orderFolderId: rawNames.join(' + '),
     status: 'validating',
     message: 'Validating against spreadsheet...',
     startedAt: Date.now(),
@@ -256,23 +284,11 @@ async function processOrder(
   });
 
   try {
-    // ── Step 1: Check if output PDF already exists in secondary Drive ──
-    if (config.secondaryDriveFolderId) {
-      const outputExists = await driveService.checkOutputExists(
-        config.secondaryDriveFolderId, resi, variant,
-      );
-      if (outputExists) {
-        state.updateJob(jobId, { status: 'skipped', message: 'PDF already exists in secondary Drive', progress: 100 });
-        state.completeJob(jobId, 'skipped');
-        return;
-      }
-    }
-
-    // ── Step 2: Validate against spreadsheet ──────────────────────────
+    // ── Step 1: Validate against spreadsheet FIRST ─────────────────────
     state.updateJob(jobId, { status: 'validating', message: 'Checking spreadsheet...', progress: 10 });
 
-    const validation = await sheetsService.validateOrder(
-      shop.spreadsheetId, shop.sheetName, resi, variant, shop.columns,
+    const validation = await sheetsService.validateOrderByResi(
+      shop.spreadsheetId, shop.sheetName, resi, shop.columns,
     );
 
     if (!validation.valid) {
@@ -286,18 +302,30 @@ async function processOrder(
     const requiredPhotos = order.variant; // Unique photos needed (e.g., 25)
     const qty = order.qty;               // Number of copies (e.g., 2x print)
 
-    state.updateJob(jobId, { qty, message: `Validated: ${requiredPhotos} photos × ${qty} copies` });
-    logger.info('ORCH', `[${shopName}] ${resi}: Validated — need ${requiredPhotos} photos, ${qty} copies`);
+    state.updateJob(jobId, { variant: requiredPhotos, qty, message: `Validated: ${requiredPhotos} photos × ${qty} copies` });
+    logger.info('ORCH', `[${shopName}] ${resi}: Validated from sheet — need ${requiredPhotos} photos, ${qty} copies`);
 
-    // ── Step 3: Inspect folder (count + stale check in 1 API call) ────
-    state.updateJob(jobId, { status: 'downloading', message: 'Inspecting folder...', progress: 20 });
+    // ── Step 2: Check if output PDF already exists in secondary Drive ──
+    if (config.secondaryDriveFolderId) {
+      const outputExists = await driveService.checkOutputExists(
+        config.secondaryDriveFolderId, resi, requiredPhotos,
+      );
+      if (outputExists) {
+        state.updateJob(jobId, { status: 'skipped', message: 'PDF already exists in secondary Drive', progress: 100 });
+        state.completeJob(jobId, 'skipped');
+        return;
+      }
+    }
 
-    const inspection = await driveService.inspectFolder(orderFolderId);
+    // ── Step 3: Inspect merged folders (count + deduplicate + stale) ───
+    state.updateJob(jobId, { status: 'downloading', message: 'Inspecting folders...', progress: 20 });
+
+    const inspection = await driveService.inspectMultipleFolders(folderIds);
 
     // 3a: No images at all → skip
     if (inspection.count === 0) {
-      logger.info('ORCH', `[${shopName}] SKIP ${resi}: No images in folder`);
-      state.updateJob(jobId, { status: 'skipped', message: 'No images found in folder', progress: 100 });
+      logger.info('ORCH', `[${shopName}] SKIP ${resi}: No images in folder(s)`);
+      state.updateJob(jobId, { status: 'skipped', message: 'No images found in folder(s)', progress: 100 });
       state.completeJob(jobId, 'skipped');
       return;
     }
@@ -330,7 +358,7 @@ async function processOrder(
     let localPaths: string[];
 
     try {
-      localPaths = await driveService.downloadImages(orderFolderId, tempDir, {
+      localPaths = await driveService.downloadImages(inspection.uniqueFiles, tempDir, {
         limit: photosToUse,
         sortByNewest: true,
       });
@@ -341,11 +369,11 @@ async function processOrder(
 
     logger.info('ORCH', `[${shopName}] ${resi}: Using ${localPaths.length} photos × ${qty} copies`);
 
-    // ── Step 4: Generate PDF ──────────────────────────────────────────
+    // ── Step 5: Generate PDF ──────────────────────────────────────────
     state.updateJob(jobId, { status: 'generating', message: `Generating PDF (${localPaths.length} photos)...`, progress: 40 });
 
     const batchColor = generateRandomBatchColor();
-    const outputFileName = buildOutputFileName(resi, variant);
+    const outputFileName = buildOutputFileName(resi, requiredPhotos);
     const outputPath = path.join(tempDir, outputFileName);
 
     try {
@@ -364,7 +392,7 @@ async function processOrder(
       throw new Error(`PDF generation failed: ${msg}`);
     }
 
-    // ── Step 5: Upload PDF to secondary Drive ─────────────────────────
+    // ── Step 6: Upload PDF to secondary Drive ─────────────────────────
     if (config.secondaryDriveFolderId && !config.dryRun) {
       state.updateJob(jobId, { status: 'uploading', message: 'Uploading PDF...', progress: 75 });
 
@@ -378,7 +406,7 @@ async function processOrder(
       logger.info('ORCH', `[${shopName}] DRY RUN: Would upload ${outputFileName}`);
     }
 
-    // ── Step 6: Mark as processed in spreadsheet ──────────────────────
+    // ── Step 7: Mark as processed in spreadsheet ──────────────────────
     if (!config.dryRun) {
       state.updateJob(jobId, { status: 'marking', message: 'Marking as BOT in spreadsheet...', progress: 90 });
 
@@ -401,7 +429,7 @@ async function processOrder(
     // ── Done! ─────────────────────────────────────────────────────────
     state.updateJob(jobId, { status: 'done', message: `✅ Completed successfully`, progress: 100 });
     state.completeJob(jobId, 'done');
-    logger.success('ORCH', `[${shopName}] ✅ ${resi} — ${variant} pcs × ${order.qty} — DONE`);
+    logger.success('ORCH', `[${shopName}] ✅ ${resi} — ${requiredPhotos} pcs × ${order.qty} — DONE`);
 
     // Cleanup temp files
     cleanup(tempDir);

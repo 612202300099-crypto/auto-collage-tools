@@ -74,7 +74,7 @@ export function addJob(job: ProcessingJob): ProcessingJob {
  */
 export function updateJob(
   jobId: string,
-  updates: Partial<Pick<ProcessingJob, 'status' | 'message' | 'progress' | 'qty'>>,
+  updates: Partial<Pick<ProcessingJob, 'status' | 'message' | 'progress' | 'qty' | 'variant'>>,
 ): void {
   const job = state.activeJobs.find(j => j.id === jobId);
   if (job) {

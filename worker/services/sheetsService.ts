@@ -214,14 +214,14 @@ export async function findOrderByResi(
 }
 
 /**
- * Validate an order against the spreadsheet.
+ * Validate an order against the spreadsheet by Resi alone.
+ * Relies on the spreadsheet as the source of truth for variant/qty.
  * Returns { valid, order, reason } for clear skip logging.
  */
-export async function validateOrder(
+export async function validateOrderByResi(
   spreadsheetId: string,
   sheetName: string,
   resi: string,
-  expectedVariant: number,
   columns: ShopColumnMapping,
 ): Promise<ValidationResult> {
   const order = await findOrderByResi(spreadsheetId, sheetName, resi, columns);
@@ -244,13 +244,12 @@ export async function validateOrder(
     return { valid: false, order, reason: `Order is DIBATALKAN (cancelled)` };
   }
 
-  // Check: Variant mismatch
-  // Variant bisa 0 jika kolom G kosong, skip validation in that case
-  if (order.variant > 0 && order.variant !== expectedVariant) {
+  // Check: Has valid variant in spreadsheet
+  if (order.variant <= 0) {
     return {
       valid: false,
       order,
-      reason: `Variant mismatch: folder says ${expectedVariant}, spreadsheet says ${order.variant}`,
+      reason: `No valid variant (VARIASI) found in spreadsheet for this Resi`,
     };
   }
 

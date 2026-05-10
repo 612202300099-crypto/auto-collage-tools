@@ -73,7 +73,7 @@ export async function listImageFiles(folderId: string): Promise<DriveFile[]> {
   do {
     const res = await drive.files.list({
       q: `'${folderId}' in parents and (${mimeQuery}) and trashed = false`,
-      fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime)',
+      fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime, md5Checksum)',
       orderBy: 'name',
       pageSize: 200,
       pageToken,
@@ -90,6 +90,7 @@ export async function listImageFiles(folderId: string): Promise<DriveFile[]> {
             mimeType: f.mimeType,
             size: f.size ? parseInt(f.size, 10) : undefined,
             modifiedTime: f.modifiedTime || undefined,
+            md5Checksum: f.md5Checksum || undefined,
           });
         }
       }
@@ -144,6 +145,65 @@ export async function inspectFolder(folderId: string): Promise<FolderInspection>
   };
 }
 
+export interface MultipleFolderInspection extends FolderInspection {
+  uniqueFiles: DriveFile[];
+}
+
+/**
+ * Inspect multiple folders at once. Combines all images and removes
+ * duplicates based on Google Drive's md5Checksum.
+ * This is perfect for merging "LAINNYA" and "POLAROID" folders.
+ */
+export async function inspectMultipleFolders(folderIds: string[]): Promise<MultipleFolderInspection> {
+  const allFiles: DriveFile[] = [];
+  for (const id of folderIds) {
+    const f = await listImageFiles(id);
+    allFiles.push(...f);
+  }
+
+  // Deduplicate using md5Checksum
+  const uniqueMap = new Map<string, DriveFile>();
+  const noMd5: DriveFile[] = [];
+
+  for (const f of allFiles) {
+    if (f.md5Checksum) {
+      if (!uniqueMap.has(f.md5Checksum)) {
+        uniqueMap.set(f.md5Checksum, f);
+      }
+    } else {
+      noMd5.push(f);
+    }
+  }
+
+  const uniqueFiles = [...Array.from(uniqueMap.values()), ...noMd5];
+
+  if (uniqueFiles.length === 0) {
+    return { count: 0, lastModifiedAt: null, minutesSinceLastUpload: null, uniqueFiles: [] };
+  }
+
+  // Find the most recently modified file among the unique files
+  let latestTime: Date | null = null;
+  for (const f of uniqueFiles) {
+    if (f.modifiedTime) {
+      const t = new Date(f.modifiedTime);
+      if (!latestTime || t > latestTime) {
+        latestTime = t;
+      }
+    }
+  }
+
+  const minutesSinceLastUpload = latestTime
+    ? Math.round((Date.now() - latestTime.getTime()) / 60_000)
+    : null;
+
+  return {
+    count: uniqueFiles.length,
+    lastModifiedAt: latestTime,
+    minutesSinceLastUpload,
+    uniqueFiles,
+  };
+}
+
 /**
  * Count images in a folder without downloading them.
  * Simple wrapper — use inspectFolder() if you also need stale info.
@@ -173,17 +233,16 @@ export async function checkOutputExists(dateFolderId: string, resi: string, vari
 }
 
 /**
- * Download images from a Drive folder to a local temp directory.
+ * Download images from a pre-fetched list of Drive files to a local temp directory.
  * @param options.limit Max number of images to download.
  * @param options.sortByNewest If true, sorts by modifiedTime descending before limiting.
  * Returns array of local file paths, sorted by name (or time if sortByNewest).
  */
 export async function downloadImages(
-  folderId: string,
+  files: DriveFile[],
   destDir: string,
   options?: { limit?: number; sortByNewest?: boolean }
 ): Promise<string[]> {
-  let files = await listImageFiles(folderId);
   if (files.length === 0) return [];
 
   // Sort and limit files before downloading

@@ -71,6 +71,7 @@ function parseShopsConfig(): ShopConfig[] {
       spreadsheetId: shop.spreadsheetId,
       sheetName: (shop.sheetName as string) || 'FOTO POLAROID',
       polaroidFolderName: (shop.polaroidFolderName as string) || 'POLAROID',
+      lainnyaFolderName: (shop.lainnyaFolderName as string) || 'LAINNYA',
       columns: shop.columns as ShopConfig['columns'],
     });
   }
