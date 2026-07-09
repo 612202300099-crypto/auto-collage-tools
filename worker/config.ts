@@ -93,7 +93,7 @@ export function loadConfig(): WorkerConfig {
     ),
     driveRootFolderId: requireEnv('DRIVE_ROOT_FOLDER_ID'),
     shops,
-    editorText: process.env.EDITOR_TEXT || '',
+    batchText: process.env.BATCH_TEXT || '',
     pollIntervalMinutes: parseInt(process.env.POLL_INTERVAL_MINUTES || '5', 10),
     maxConcurrency: parseInt(process.env.MAX_CONCURRENCY || '5', 10),
     staleTimeoutMinutes: parseInt(process.env.STALE_TIMEOUT_MINUTES || '60', 10),
@@ -102,6 +102,9 @@ export function loadConfig(): WorkerConfig {
     dryRun: process.env.DRY_RUN === 'true',
     serverPort: parseInt(process.env.WORKER_PORT || '4000', 10),
     secondaryDriveFolderId: process.env.SECONDARY_DRIVE_FOLDER_ID,
+    // Path ke SQLite database — default di root project (sejajar dengan .env)
+    // dateFrom dan dateTo TIDAK diload di sini, tapi dari DB saat boot di index.ts
+    dbPath: path.resolve(import.meta.dirname, '..', process.env.DB_PATH || 'worker.db'),
   };
 
   // Validate: Credentials file must exist

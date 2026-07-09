@@ -2,6 +2,14 @@ import { yieldToMain } from './yieldToMain';
 import { detectFace, AIEngine } from './aiService';
 import heic2any from 'heic2any';
 
+/**
+ * UNIVERSAL PRINT FILTER — Balance point antara Art Paper 230gsm dan 310gsm.
+ * brightness +18% : kompensasi penyerapan tinta (dot gain) art paper
+ * saturate  +38% : pulihkan warna yang kusam akibat absorbsi kertas
+ * contrast  +1%  : sentuhan ringan agar foto tetap tajam, tanpa crush shadow
+ */
+const PRINT_FILTER = 'brightness(1.18) saturate(1.38) contrast(1.01)';
+
 // ─────────────────────────────────────────────────────────────────
 // INTERNAL: build + draw canvas — dipakai oleh kedua export di bawah
 // ─────────────────────────────────────────────────────────────────
@@ -156,8 +164,8 @@ async function buildCollageCanvas(
     ctx.rect(photoAreaX, photoAreaY, photoAreaW, photoAreaH);
     ctx.clip();
     
-    // Auto-Enhancement (Brightness, Saturation, Contrast)
-    ctx.filter = 'brightness(1.05) saturate(1.2) contrast(1.1)';
+    // Universal print compensation filter
+    ctx.filter = PRINT_FILTER;
     ctx.drawImage(img, destX, destY, drawW, drawH);
     
     ctx.restore();
@@ -207,11 +215,13 @@ async function buildCollageCanvas(
   const labelX = Math.round((CANVAS_WIDTH - labelWidth) / 2);
   const labelY = Math.round((MARGIN_Y - labelHeight) / 2);
 
-  ctx.fillStyle = 'black';
+  // Background Resi: Pakai warna tag (siku) jika ada, kalau tidak pakai hitam
+  ctx.fillStyle = tagColor ? tagColor : 'black';
   ctx.beginPath();
   ctx.roundRect(labelX, labelY, labelWidth, labelHeight, Math.round(labelHeight * 0.25));
   ctx.fill();
 
+  // Warna Teks Resi: Putih
   ctx.fillStyle = 'white';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';

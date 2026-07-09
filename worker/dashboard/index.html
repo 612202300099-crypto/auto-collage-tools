@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="id">
 <head>
   <meta charset="UTF-8">
@@ -437,6 +437,20 @@
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 10px; }
     ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+    /* --- DATE FILTER -------------------------------------------------------- */
+    .date-filter-active { background:rgba(251,191,36,0.12)!important; border-color:rgba(251,191,36,0.4)!important; }
+    .date-input { padding:0.4rem 0.6rem; background:var(--bg); border:1px solid var(--card-border); border-radius:6px; color:var(--text); font-family:var(--mono); font-size:0.72rem; cursor:pointer; }
+    .date-input:focus { outline:none; border-color:var(--accent); }
+
+    /* --- DB BROWSER --------------------------------------------------------- */
+    .db-section { grid-column: 1 / -1; }
+    .db-table-wrapper { width:100%; max-height:380px; overflow-y:auto; }
+    .db-table { width:100%; border-collapse:collapse; font-size:0.63rem; font-family:var(--mono); text-align:left; }
+    .db-table th { position:sticky; top:0; background:var(--card); color:var(--text-dim); font-weight:600; padding:0.55rem 0.75rem; text-transform:uppercase; letter-spacing:0.05em; border-bottom:1px solid var(--card-border); z-index:10; }
+    .db-table td { padding:0.55rem 0.75rem; border-bottom:1px solid rgba(255,255,255,0.03); vertical-align:middle; }
+    .db-table tr:hover td { background:rgba(255,255,255,0.02); }
+    .btn-reprocess { padding:0.25rem 0.55rem; font-size:0.55rem; background:rgba(239,68,68,0.1); color:var(--red); border:1px solid rgba(239,68,68,0.3); border-radius:4px; cursor:pointer; font-family:var(--mono); font-weight:600; text-transform:uppercase; letter-spacing:0.05em; transition:all 0.15s; }
+    .btn-reprocess:hover { background:rgba(239,68,68,0.2); transform:translateY(-1px); }
 
     /* ─── TIMER ──────────────────────────────────────────── */
     .next-scan {
@@ -510,6 +524,11 @@
         <div class="stat-label">Active Jobs</div>
         <div class="stat-value" id="statActive">0</div>
       </div>
+      <div class="stat-card" style="background:var(--card);border:1px solid var(--card-border);border-radius:12px;padding:1.2rem;position:relative;overflow:hidden;">
+        <div style="position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,#c084fc,transparent);"></div>
+        <div class="stat-label">DB Records</div>
+        <div class="stat-value" id="statDb" style="color:#c084fc;">0</div>
+      </div>
     </div>
 
     <!-- CONTROLS -->
@@ -533,14 +552,29 @@
             <input type="number" class="config-input" id="cfgStaleTimeout" min="10" max="1440" value="60" onchange="updateConfig()" title="Stale timeout: proses order incomplete jika tidak ada upload baru setelah X menit">
           </div>
           <div style="display: flex; gap: 0.8rem; width: 100%; align-items: center; margin-top: 0.5rem;">
-            <label style="min-width: max-content;">Editor Text</label>
-            <input type="text" class="config-input" id="cfgEditorText" placeholder="e.g. sen 3, bot session 1" style="flex: 1; text-align: left;" onchange="updateConfig()">
+            <label style="min-width: max-content;">Upload Batch</label>
+            <select class="config-input" id="cfgBatchText" style="flex: 1; text-align: left; cursor: pointer;" onchange="updateConfig()">
+              <option value="BATCH 1">BATCH 1</option>
+              <option value="BATCH 2">BATCH 2</option>
+              <option value="BATCH 3">BATCH 3</option>
+              <option value="BATCH 4">BATCH 4</option>
+              <option value="BATCH 5">BATCH 5</option>
+            </select>
           </div>
           <div style="display: flex; gap: 0.8rem; width: 100%; align-items: center; margin-top: 0.5rem;">
             <label style="min-width: max-content;">Secondary Drive Link / ID</label>
             <input type="text" class="config-input" id="cfgSecondaryDrive" placeholder="Paste link or folder ID..." style="flex: 1; text-align: left;" onchange="updateConfig()">
           </div>
         </div>
+          <div style="display:flex;gap:0.8rem;width:100%;align-items:center;margin-top:0.5rem;padding:0.6rem;background:rgba(251,191,36,0.06);border:1px solid rgba(251,191,36,0.15);border-radius:8px;" id="dateFilterRow">
+            <span style="font-size:0.6rem;font-family:var(--mono);color:var(--accent);text-transform:uppercase;letter-spacing:0.1em;min-width:max-content;">📅 Filter Tanggal</span>
+            <label style="min-width:max-content;font-size:0.6rem;">Dari</label>
+            <input type="date" class="date-input" id="cfgDateFrom" onchange="updateConfig()" title="Hanya proses order pada/setelah tanggal ini">
+            <label style="min-width:max-content;font-size:0.6rem;">Sampai</label>
+            <input type="date" class="date-input" id="cfgDateTo" onchange="updateConfig()" title="Hanya proses order pada/sebelum tanggal ini">
+            <button class="btn" style="font-size:0.6rem;padding:0.35rem 0.7rem;" onclick="clearDateFilter()" title="Hapus filter tanggal — proses semua tanggal">✕ Clear</button>
+            <span id="dateFilterStatus" style="font-size:0.58rem;font-family:var(--mono);color:var(--text-dim);margin-left:auto;"></span>
+          </div>
       </div>
     </div>
 
@@ -581,6 +615,27 @@
       </div>
     </div>
 
+    <!-- DB BROWSER -->
+    <div class="card db-section">
+      <div class="card-header" style="justify-content:space-between;">
+        <span>🗃️ Database Order (Riwayat Persisten)</span>
+        <div style="display:flex;align-items:center;gap:0.5rem;">
+          <span id="dbCount" style="font-size:0.6rem;font-family:var(--mono);color:var(--text-dim);">0 records</span>
+          <button class="btn" style="font-size:0.6rem;padding:0.3rem 0.6rem;background:rgba(239,68,68,0.1);color:var(--red);border-color:rgba(239,68,68,0.3);" onclick="confirmClearDb()">🗑️ Reset DB</button>
+        </div>
+      </div>
+      <div class="card-body" style="padding:0;">
+        <div class="db-table-wrapper" id="dbTableWrapper">
+          <div class="empty-state">Memuat data database...</div>
+        </div>
+        <div class="db-pagination" id="dbPagination" style="display:none;">
+          <span id="dbPageInfo" style="font-size:0.6rem;font-family:var(--mono);color:var(--text-dim);margin-right:auto;"></span>
+          <button class="btn" id="btnDbPrev" style="font-size:0.6rem;padding:0.3rem 0.6rem;" onclick="dbPrevPage()">← Prev</button>
+          <button class="btn" id="btnDbNext" style="font-size:0.6rem;padding:0.3rem 0.6rem;" onclick="dbNextPage()">Next →</button>
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <script>
@@ -614,8 +669,11 @@
         document.getElementById('cfgInterval').value = cfg.pollIntervalMinutes;
         document.getElementById('cfgConcurrency').value = cfg.maxConcurrency;
         document.getElementById('cfgSecondaryDrive').value = cfg.secondaryDriveFolderId || '';
-        document.getElementById('cfgEditorText').value = cfg.editorText || '';
+        document.getElementById('cfgBatchText').value = cfg.batchText || 'BATCH 1';
         document.getElementById('cfgStaleTimeout').value = cfg.staleTimeoutMinutes || 60;
+        document.getElementById('cfgDateFrom').value = cfg.dateFrom || '';
+        document.getElementById('cfgDateTo').value = cfg.dateTo || '';
+        updateDateFilterStatus(cfg.dateFrom, cfg.dateTo);
         // Update shops badge
         if (cfg.shops && cfg.shops.length > 0) {
           const names = cfg.shops.map(s => s.name).join(', ');
@@ -641,8 +699,10 @@
       const interval = document.getElementById('cfgInterval').value;
       const concurrency = document.getElementById('cfgConcurrency').value;
       const secondaryDrive = document.getElementById('cfgSecondaryDrive').value;
-      const editorText = document.getElementById('cfgEditorText').value;
+      const batchText = document.getElementById('cfgBatchText').value;
       const staleTimeout = document.getElementById('cfgStaleTimeout').value;
+      const dateFrom = document.getElementById('cfgDateFrom').value;
+      const dateTo   = document.getElementById('cfgDateTo').value;
       try {
         await fetch('/api/config', {
           method: 'POST',
@@ -651,12 +711,15 @@
             pollIntervalMinutes: parseInt(interval),
             maxConcurrency: parseInt(concurrency),
             secondaryDriveFolderId: secondaryDrive,
-            editorText: editorText,
-            staleTimeoutMinutes: parseInt(staleTimeout)
+            batchText: batchText,
+            staleTimeoutMinutes: parseInt(staleTimeout),
+            dateFrom: dateFrom,
+            dateTo:   dateTo
           }),
         });
         fetchState();
         fetchConfig();
+        updateDateFilterStatus(dateFrom, dateTo);
       } catch (e) {}
     }
 
@@ -672,6 +735,7 @@
       document.getElementById('statErrors').textContent = s.totalErrors;
       document.getElementById('statSkipped').textContent = s.totalSkipped;
       document.getElementById('statActive').textContent = s.activeJobs.length;
+      // Update DB count from state if available
 
       // Next scan
       const nextInfo = document.getElementById('nextScanInfo');
@@ -788,6 +852,141 @@
       return div.innerHTML;
     }
 
+
+    // === Date Filter Helpers ================================================
+
+    function updateDateFilterStatus(from, to) {
+      const el  = document.getElementById('dateFilterStatus');
+      const row = document.getElementById('dateFilterRow');
+      if (!el || !row) return;
+      if (from || to) {
+        const fmt = d => d ? new Date(d + 'T00:00:00').toLocaleDateString('id-ID', { day:'2-digit', month:'short', year:'numeric' }) : '...';
+        el.textContent   = 'Aktif: ' + fmt(from) + ' - ' + fmt(to);
+        el.style.color   = 'var(--accent)';
+        row.style.borderColor = 'rgba(251,191,36,0.4)';
+        row.style.background  = 'rgba(251,191,36,0.08)';
+      } else {
+        el.textContent   = 'Tidak aktif (semua tanggal diproses)';
+        el.style.color   = 'var(--text-dim)';
+        row.style.borderColor = 'rgba(251,191,36,0.15)';
+        row.style.background  = 'rgba(251,191,36,0.06)';
+      }
+    }
+
+    async function clearDateFilter() {
+      document.getElementById('cfgDateFrom').value = '';
+      document.getElementById('cfgDateTo').value   = '';
+      try {
+        await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dateFrom: '', dateTo: '' }),
+        });
+        updateDateFilterStatus('', '');
+        fetchConfig();
+      } catch (e) { alert('Gagal menghapus filter: ' + e.message); }
+    }
+
+    // === DB Browser =========================================================
+
+    let dbCurrentPage = 0;
+    const DB_PAGE_SIZE = 50;
+
+    async function fetchDbRecords() {
+      try {
+        const offset = dbCurrentPage * DB_PAGE_SIZE;
+        const res    = await fetch('/api/db/processed?limit=' + DB_PAGE_SIZE + '&offset=' + offset);
+        const data   = await res.json();
+        renderDbTable(data);
+        const statDbEl = document.getElementById('statDb'); if (statDbEl) statDbEl.textContent = data.total;
+      } catch (e) {
+        console.error('Failed to fetch DB records:', e);
+      }
+    }
+
+    function renderDbTable(data) {
+      const wrapper    = document.getElementById('dbTableWrapper');
+      const pagination = document.getElementById('dbPagination');
+      if (!wrapper) return;
+
+      if (!data.records || data.records.length === 0) {
+        wrapper.innerHTML = '<div class="empty-state">Belum ada order yang tersimpan di database lokal</div>';
+        if (pagination) pagination.style.display = 'none';
+        document.getElementById('dbCount').textContent = data.total + ' records';
+        return;
+      }
+
+      let tableHtml = `<table class="db-table">
+        <thead>
+          <tr>
+            <th>Resi</th>
+            <th>Toko</th>
+            <th>Variant</th>
+            <th>Batch</th>
+            <th>Row#</th>
+            <th>Diproses Pada</th>
+            <th>Aksi</th>
+          </tr>
+        </thead>
+        <tbody>`;
+
+      tableHtml += data.records.map(function(r) {
+        const d       = new Date(r.processedAt);
+        const dateStr = d.toLocaleDateString('id-ID', { day:'2-digit', month:'short', year:'numeric' });
+        const timeStr = d.toLocaleTimeString('id-ID', { hour:'2-digit', minute:'2-digit' });
+        return '<tr>'
+          + '<td style="font-weight:700;color:var(--text);">'  + escapeHtml(r.resi)      + '</td>'
+          + '<td style="color:#a855f7;">'                       + escapeHtml(r.shopName)  + '</td>'
+          + '<td style="color:var(--cyan);">'                   + r.variant + ' pcs'      + '</td>'
+          + '<td style="color:var(--accent);">'                 + escapeHtml(r.batchText || '-') + '</td>'
+          + '<td style="color:var(--text-dim);">'               + r.rowNumber             + '</td>'
+          + '<td style="color:var(--text-dim);font-size:0.58rem;">' + dateStr + '<br>' + timeStr + '</td>'
+          + '<td><button class="btn-reprocess" onclick="reprocessOrder(' + r.id + ', \'' + escapeHtml(r.resi) + '\')" title="Hapus dari DB agar dapat diproses ulang">Re-process</button></td>'
+          + '</tr>';
+      }).join('');
+
+      tableHtml += '</tbody></table>';
+      wrapper.innerHTML = tableHtml;
+
+      // Update pagination
+      const totalPages = Math.ceil(data.total / DB_PAGE_SIZE);
+      if (pagination) {
+        const pageInfo = document.getElementById('dbPageInfo');
+        if (pageInfo) pageInfo.textContent = 'Hal. ' + (dbCurrentPage+1) + ' / ' + totalPages + ' (' + data.total + ' records total)';
+        document.getElementById('btnDbPrev').disabled = (dbCurrentPage === 0);
+        document.getElementById('btnDbNext').disabled = !data.hasMore;
+        pagination.style.display = (data.total > DB_PAGE_SIZE) ? 'flex' : 'none';
+      }
+      document.getElementById('dbCount').textContent = data.total + ' records';
+    }
+
+    async function reprocessOrder(id, resi) {
+      if (!confirm('Hapus "' + resi + '" dari database?\n\nOrder ini akan diproses ulang di scan berikutnya.')) return;
+      try {
+        const res  = await fetch('/api/db/processed/' + id, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || 'Gagal menghapus record'); return; }
+        alert(data.message);
+        fetchDbRecords();
+      } catch (e) { alert('Error: ' + e.message); }
+    }
+
+    async function confirmClearDb() {
+      const total = (document.getElementById('statDb') || {textContent:'?'}).textContent;
+      if (!confirm('PERINGATAN!\n\nIni akan menghapus SEMUA ' + total + ' record dari database.\nSemua order dapat diproses ulang.\n\nLanjutkan?')) return;
+      try {
+        const res  = await fetch('/api/db/processed', { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || 'Gagal'); return; }
+        alert(data.message);
+        dbCurrentPage = 0;
+        fetchDbRecords();
+      } catch (e) { alert('Error: ' + e.message); }
+    }
+
+    function dbPrevPage() { if (dbCurrentPage > 0) { dbCurrentPage--; fetchDbRecords(); } }
+    function dbNextPage() { dbCurrentPage++; fetchDbRecords(); }
+
     // ─── Polling ──────────────────────────────────────────────────────────
     fetchConfig();
     fetchState();
@@ -795,6 +994,7 @@
 
     setInterval(fetchState, 2000);
     setInterval(fetchLogs, 3000);
+    setInterval(fetchDbRecords, 10000);
   </script>
 </body>
 </html>

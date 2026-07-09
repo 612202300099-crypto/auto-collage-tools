@@ -69,12 +69,22 @@ export async function listImageFiles(folderId: string): Promise<DriveFile[]> {
   let pageToken: string | undefined;
 
   const mimeQuery = MIME_IMAGES.map(m => `mimeType = '${m}'`).join(' or ');
+  
+  // Exclude common receipt/invoice keywords using Google Drive's built-in OCR (fullText)
+  // This safely ignores order receipts without blocking IG or Chat screenshots!
+  const receiptExclusions = [
+    "not fullText contains 'rincian pesanan'",
+    "not fullText contains 'total pembayaran'",
+    "not fullText contains 'bukti transfer'",
+    "not fullText contains 'transfer berhasil'",
+    "not fullText contains 'metode pembayaran'",
+    "not fullText contains 'no. pesanan'"
+  ].join(' and ');
 
   do {
     const res = await drive.files.list({
-      q: `'${folderId}' in parents and (${mimeQuery}) and trashed = false`,
+      q: `'${folderId}' in parents and (${mimeQuery}) and trashed = false and ${receiptExclusions}`,
       fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime, md5Checksum)',
-      orderBy: 'name',
       pageSize: 200,
       pageToken,
       supportsAllDrives: true,
@@ -97,6 +107,9 @@ export async function listImageFiles(folderId: string): Promise<DriveFile[]> {
     }
     pageToken = res.data.nextPageToken || undefined;
   } while (pageToken);
+
+  // Sort files by name in memory since Drive API forbids orderBy with fullText
+  files.sort((a, b) => a.name.localeCompare(b.name));
 
   return files;
 }
@@ -214,15 +227,14 @@ export async function countImagesInFolder(folderId: string): Promise<number> {
 }
 
 /**
- * Check if a file with the expected output name already exists in a folder.
- * This is the primary anti-duplicate mechanism (Layer 1).
+ * Check if any PDF file containing the Resi name exists in the destination folder.
+ * This prevents double-generation if the exact name varies slightly.
  */
-export async function checkOutputExists(dateFolderId: string, resi: string, variant: number): Promise<boolean> {
+export async function checkResiOutputExists(destinationFolderId: string, resi: string): Promise<boolean> {
   const drive = getDriveClient();
-  const expectedName = buildOutputFileName(resi, variant);
 
   const res = await drive.files.list({
-    q: `'${dateFolderId}' in parents and name = '${expectedName}' and trashed = false`,
+    q: `'${destinationFolderId}' in parents and name contains '${resi}' and mimeType = 'application/pdf' and trashed = false`,
     fields: 'files(id, name)',
     pageSize: 1,
     supportsAllDrives: true,

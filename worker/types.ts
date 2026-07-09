@@ -20,6 +20,8 @@ export interface DriveFile {
   size?: number;
   modifiedTime?: string;
   md5Checksum?: string;
+  width?: number;
+  height?: number;
 }
 
 // ─── Shop Configuration ─────────────────────────────────────────────────────
@@ -30,10 +32,12 @@ export interface DriveFile {
  * EDITOR column varies per shop (auto-detected from header row).
  */
 export interface ShopColumnMapping {
-  /** Column letter for EDITOR (e.g., "M" or "N") — auto-detected */
-  editor: string;
-  /** Column letter for editor text (column after EDITOR) — auto-detected */
-  editorText: string;
+  /** Column letter for Status (e.g., "N") — auto-detected */
+  statusCol: string;
+  /** Column letter for Dikerjakan BOT (e.g., "O") — auto-detected */
+  botCol: string;
+  /** Column letter for Upload Batch (e.g., "P") — auto-detected */
+  batchCol: string;
 }
 
 /**
@@ -96,8 +100,12 @@ export interface SheetOrderData {
   expectedPhotos: number;
   /** Status transaksi dari kolom J */
   status: string;
-  /** Value of EDITOR column (empty = not done, any value = already processed) */
-  editorValue: string;
+  /** Value of Kolom Status (N) */
+  botStatusValue: string;
+  /** Value of DIKERJAKAN BOT column (empty = not done, "DONE" = already processed) */
+  botValue: string;
+  /** Tanggal order dari Kolom A (raw string, format DD-MM-YYYY) */
+  orderDate: string;
 }
 
 export interface ValidationResult {
@@ -159,8 +167,8 @@ export interface WorkerConfig {
   driveRootFolderId: string;
   /** Array of shop configurations */
   shops: ShopConfig[];
-  /** Text to write in the column after EDITOR (configurable via dashboard) */
-  editorText: string;
+  /** Text to write in the UPLOAD BATCH column (configurable via dashboard dropdown) */
+  batchText: string;
   pollIntervalMinutes: number;
   maxConcurrency: number;
   /** Minutes after last upload to consider an incomplete order as "stale" (ready to process) */
@@ -171,6 +179,45 @@ export interface WorkerConfig {
   serverPort: number;
   /** Secondary Drive folder for uploading finished PDFs */
   secondaryDriveFolderId?: string;
+  /** Path ke file SQLite database untuk persistent order tracking */
+  dbPath: string;
+  /**
+   * Filter tanggal: hanya proses order pada/setelah tanggal ini.
+   * Format: YYYY-MM-DD (standard HTML date input).
+   * Jika kosong/undefined → tidak ada batas bawah (semua tanggal lama diproses).
+   * Disimpan persisten di DB, di-load saat boot.
+   */
+  dateFrom?: string;
+  /**
+   * Filter tanggal: hanya proses order pada/sebelum tanggal ini.
+   * Format: YYYY-MM-DD (standard HTML date input).
+   * Jika kosong/undefined → tidak ada batas atas (semua tanggal baru diproses).
+   * Disimpan persisten di DB, di-load saat boot.
+   */
+  dateTo?: string;
+}
+
+// ─── Database Records ───────────────────────────────────────────────────────
+
+/**
+ * Representasi satu baris dari tabel processed_orders di SQLite.
+ * Digunakan untuk API response dan tampilan di dashboard.
+ */
+export interface ProcessedOrderRecord {
+  /** Primary key auto-increment */
+  id: number;
+  /** Nama toko (CUSTOMBASE, GIFTYOURS, VENTURA) */
+  shopName: string;
+  /** Nomor resi order */
+  resi: string;
+  /** Jumlah foto variant (25, 50, 100, dll.) */
+  variant: number;
+  /** Unix timestamp (ms) kapan order ini selesai diproses */
+  processedAt: number;
+  /** Label batch yang digunakan saat pemrosesan */
+  batchText: string;
+  /** Nomor baris di spreadsheet */
+  rowNumber: number;
 }
 
 // ─── Logger ─────────────────────────────────────────────────────────────────

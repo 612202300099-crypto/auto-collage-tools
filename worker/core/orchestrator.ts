@@ -1,4 +1,4 @@
-/**
+﻿/**
  * orchestrator.ts — Main automation loop for the Worker.
  *
  * Multi-shop architecture:
@@ -13,13 +13,16 @@ import fs from 'fs';
 import path from 'path';
 import { logger } from '../utils/logger.ts';
 import { parseFolderName, buildOutputFileName, extractResi } from '../utils/folderParser.ts';
+import { parseYYYYMMDD } from '../utils/dateUtils.ts';
 import { generateRandomBatchColor } from './colorUtils.ts';
 import * as driveService from '../services/driveService.ts';
 import * as sheetsService from '../services/sheetsService.ts';
+import * as dbService from '../services/dbService.ts';
 import { generatePDF } from '../engine/pdfEngine.ts';
 import { WorkerPool } from './workerPool.ts';
 import * as state from './stateManager.ts';
 import type { WorkerConfig, ResolvedShop, ShopConfig, ParsedOrder } from '../types.ts';
+import type { DateRange } from '../services/sheetsService.ts';
 
 let isRunning = false;
 let scanTimer: ReturnType<typeof setTimeout> | null = null;
@@ -142,8 +145,8 @@ async function processShop(shopConfig: ShopConfig, config: WorkerConfig): Promis
 
     if (totalFound === 0) return;
 
-    // 3. Group folders by Resi
-    const orderMap = new Map<string, { folderIds: string[]; rawNames: string[] }>();
+    // 3. Group folders by Resi AND Variant
+    const orderMap = new Map<string, { resi: string; variant?: number; folderIds: string[]; rawNames: string[] }>();
     const allFolders = [...polaroidFolders, ...lainnyaFolders];
 
     for (const folder of allFolders) {
@@ -153,27 +156,47 @@ async function processShop(shopConfig: ShopConfig, config: WorkerConfig): Promis
         continue;
       }
 
-      if (orderMap.has(resi)) {
-        orderMap.get(resi)!.folderIds.push(folder.id);
-        orderMap.get(resi)!.rawNames.push(folder.name);
+      let orderKey = resi;
+      let variant: number | undefined;
+      const parsed = parseFolderName(folder.name);
+      if (parsed && parsed.variant) {
+        variant = parsed.variant;
+        orderKey = `${resi}_${variant}`;
+      }
+
+      if (orderMap.has(orderKey)) {
+        orderMap.get(orderKey)!.folderIds.push(folder.id);
+        orderMap.get(orderKey)!.rawNames.push(folder.name);
       } else {
-        orderMap.set(resi, { folderIds: [folder.id], rawNames: [folder.name] });
+        orderMap.set(orderKey, { resi, variant, folderIds: [folder.id], rawNames: [folder.name] });
       }
     }
 
-    const tasks: Array<{ resi: string; lockKey: string; folderIds: string[]; rawNames: string[] }> = [];
+    const tasks: Array<{ resi: string; variant?: number; lockKey: string; folderIds: string[]; rawNames: string[] }> = [];
 
-    for (const [resi, data] of orderMap.entries()) {
-      // In-memory lock check: prevent duplicate queuing (whether running or waiting in queue)
-      const lockKey = `${shopName}:${resi}`;
+    for (const [orderKey, data] of orderMap.entries()) {
+      // ── Layer 4: In-memory lock — cegah duplikasi dalam session yang sama ─────
+      const lockKey = `${shopName}:${orderKey}`;
       if (processingLocks.has(lockKey)) {
-        logger.debug('ORCH', `[${shopName}] Already processing/queued: ${resi}`);
+        logger.debug('ORCH', `[${shopName}] Already processing/queued: ${orderKey}`);
         continue;
       }
-      
-      // Acquire lock immediately so subsequent scans won't queue it again
+
+      // ── Layer 3: Persistent DB check — cegah re-proses setelah restart ──────
+      // Gunakan variant dari folder jika ada (misal: "JX12345_25 Pcs" → 25)
+      // Jika tidak ada (folder tanpa variant), skip cek ini — variant baru diketahui
+      // setelah validasi sheets, dan cek DB dilakukan lagi di dalam processOrder.
+      if (data.variant !== undefined) {
+        const alreadyInDb = dbService.isOrderProcessed(shopName, data.resi, data.variant);
+        if (alreadyInDb) {
+          logger.debug('ORCH', `[${shopName}] SKIP ${orderKey}: Sudah ada di DB lokal (diproses di sesi sebelumnya)`);
+          continue;
+        }
+      }
+
+      // Acquire lock dan masukkan ke antrian
       processingLocks.add(lockKey);
-      tasks.push({ resi, lockKey, ...data });
+      tasks.push({ lockKey, ...data });
     }
 
     if (tasks.length === 0) {
@@ -185,9 +208,9 @@ async function processShop(shopConfig: ShopConfig, config: WorkerConfig): Promis
 
     // 4. Execute all orders with concurrency pool
     await pool!.executeAll(
-      tasks.map(({ resi, lockKey, folderIds, rawNames }) => async () => {
+      tasks.map(({ resi, variant, lockKey, folderIds, rawNames }) => async () => {
         try {
-          await processOrder(resolvedShop, resi, folderIds, rawNames, config);
+          await processOrder(resolvedShop, resi, folderIds, rawNames, config, variant);
         } finally {
           // Release lock only after execution completes (success or failure)
           processingLocks.delete(lockKey);
@@ -238,9 +261,9 @@ async function resolveShop(
       }
     }
 
-    // Auto-detect EDITOR column (or use override from config)
+    // Auto-detect dynamic columns (or use override from config)
     const columns = shopConfig.columns ||
-      await sheetsService.detectEditorColumn(shopConfig.spreadsheetId, shopConfig.sheetName);
+      await sheetsService.detectShopColumns(shopConfig.spreadsheetId, shopConfig.sheetName);
 
     return {
       ...shopConfig,
@@ -267,9 +290,11 @@ async function processOrder(
   folderIds: string[],
   rawNames: string[],
   config: WorkerConfig,
+  folderVariant?: number,
 ): Promise<void> {
   const shopName = shop.name;
-  const jobId = `${shopName}:${resi}:${Date.now()}`;
+  const orderKey = folderVariant ? `${resi}_${folderVariant}` : resi;
+  const jobId = `${shopName}:${orderKey}:${Date.now()}`;
 
   // Create job tracking entry (variant is unknown at first)
   const job = state.addJob({
@@ -286,11 +311,20 @@ async function processOrder(
   });
 
   try {
-    // ── Step 1: Validate against spreadsheet FIRST ─────────────────────
-    state.updateJob(jobId, { status: 'validating', message: 'Checking spreadsheet...', progress: 10 });
+    // Step 1: Validasi ke Spreadsheet
+    state.updateJob(jobId, { status: 'validating', message: 'Memeriksa spreadsheet...', progress: 10 });
+
+    // Bangun DateRange dari config (undefined jika filter tanggal tidak aktif)
+    const dateRange: DateRange | undefined =
+      (config.dateFrom || config.dateTo)
+        ? {
+            from: config.dateFrom ? parseYYYYMMDD(config.dateFrom) ?? undefined : undefined,
+            to:   config.dateTo   ? parseYYYYMMDD(config.dateTo)   ?? undefined : undefined,
+          }
+        : undefined;
 
     const validation = await sheetsService.validateOrderByResi(
-      shop.spreadsheetId, shop.sheetName, resi, shop.columns,
+      shop.spreadsheetId, shop.sheetName, resi, shop.columns, folderVariant, dateRange,
     );
 
     if (!validation.valid) {
@@ -301,16 +335,27 @@ async function processOrder(
     }
 
     const order = validation.order!;
-    const requiredPhotos = order.variant; // Unique photos needed (e.g., 25)
-    const qty = order.qty;               // Number of copies (e.g., 2x print)
+    const requiredPhotos = order.variant; // Foto unik yang dibutuhkan (misal: 25)
+    const qty = order.qty;               // Jumlah copy cetak (misal: 2x print)
 
-    state.updateJob(jobId, { variant: requiredPhotos, qty, message: `Validated: ${requiredPhotos} photos × ${qty} copies` });
-    logger.info('ORCH', `[${shopName}] ${resi}: Validated from sheet — need ${requiredPhotos} photos, ${qty} copies`);
+    state.updateJob(jobId, { variant: requiredPhotos, qty, message: `Tervalidasi: ${requiredPhotos} foto × ${qty} copy` });
+    logger.info('ORCH', `[${shopName}] ${resi}: Tervalidasi dari sheet — butuh ${requiredPhotos} foto, ${qty} copy`);
+
+    // ── Step 2: Cek DB Lokal (Layer 3 Anti-Duplikasi) ───────────────────────
+    // Di sini kita sudah tahu variant dari sheets, sehingga cek DB-nya akurat.
+    // Ini menangani kasus folder tanpa variant di namanya.
+    const alreadyInDb = dbService.isOrderProcessed(shopName, resi, order.variant);
+    if (alreadyInDb) {
+      logger.info('ORCH', `[${shopName}] SKIP ${resi} (${order.variant} pcs): Sudah ada di DB lokal`);
+      state.updateJob(jobId, { status: 'skipped', message: 'Sudah diproses di sesi sebelumnya (DB lokal)', progress: 100 });
+      state.completeJob(jobId, 'skipped');
+      return;
+    }
 
     // ── Step 2: Check if output PDF already exists in secondary Drive ──
     if (config.secondaryDriveFolderId) {
-      const outputExists = await driveService.checkOutputExists(
-        config.secondaryDriveFolderId, resi, requiredPhotos,
+      const outputExists = await driveService.checkResiOutputExists(
+        config.secondaryDriveFolderId, resi,
       );
       if (outputExists) {
         state.updateJob(jobId, { status: 'skipped', message: 'PDF already exists in secondary Drive', progress: 100 });
@@ -319,20 +364,38 @@ async function processOrder(
       }
     }
 
+    // ── Step 3: Write "PROSES" to Spreadsheet ──────────────────────────
+    if (!config.dryRun) {
+      try {
+        await sheetsService.updateOrderStatus(
+          shop.spreadsheetId, shop.sheetName, order.rowNumber, shop.columns,
+          { statusText: 'PROSES' }
+        );
+      } catch (e: any) {
+        logger.warn('ORCH', `[${shopName}] Failed to write PROSES for ${resi}: ${e.message}`);
+      }
+    }
+
     // ── Step 3: Inspect merged folders (count + deduplicate + stale) ───
     state.updateJob(jobId, { status: 'downloading', message: 'Inspecting folders...', progress: 20 });
 
     const inspection = await driveService.inspectMultipleFolders(folderIds);
 
-    // 3a: No images at all → skip
+    // 4a: No images at all → skip
     if (inspection.count === 0) {
       logger.info('ORCH', `[${shopName}] SKIP ${resi}: No images in folder(s)`);
+      if (!config.dryRun) {
+        await sheetsService.updateOrderStatus(
+          shop.spreadsheetId, shop.sheetName, order.rowNumber, shop.columns,
+          { statusText: 'BELUM KIRIM FOTO' }
+        ).catch(() => {});
+      }
       state.updateJob(jobId, { status: 'skipped', message: 'No images found in folder(s)', progress: 100 });
       state.completeJob(jobId, 'skipped');
       return;
     }
 
-    // 3b: Check if enough photos OR stale (last upload was long ago)
+    // 4b: Check if enough photos OR stale (last upload was long ago)
     let photosToUse = requiredPhotos;
 
     if (inspection.count < requiredPhotos) {
@@ -340,13 +403,19 @@ async function processOrder(
       const staleThreshold = config.staleTimeoutMinutes;
 
       if (minutesAgo !== null && minutesAgo >= staleThreshold) {
-        // STALE: foto kurang tapi sudah lama tidak ada upload baru → proses dengan yang ada
-        photosToUse = inspection.count;
-        logger.info('ORCH', `[${shopName}] ${resi}: Incomplete (${inspection.count}/${requiredPhotos}) but STALE — last upload ${minutesAgo} min ago (threshold: ${staleThreshold} min). Processing with ${inspection.count} photos.`);
+        // STALE: foto kurang tapi sudah lama tidak ada upload baru → proses dengan yang ada, TAPI GANDAKAN FOTO HINGGA LENGKAP!
+        logger.info('ORCH', `[${shopName}] ${resi}: Incomplete (${inspection.count}/${requiredPhotos}) but STALE — last upload ${minutesAgo} min ago (threshold: ${staleThreshold} min). Duplicating ${inspection.count} photos to reach ${requiredPhotos}.`);
+        // We do NOT change photosToUse here, keep it at requiredPhotos so we can duplicate later.
       } else {
         // FRESH: masih mungkin uploading → skip, tunggu cycle berikutnya
         const timeInfo = minutesAgo !== null ? `last upload ${minutesAgo} min ago` : 'unknown upload time';
         logger.info('ORCH', `[${shopName}] SKIP ${resi}: Incomplete (${inspection.count}/${requiredPhotos}), ${timeInfo} — waiting for more photos`);
+        if (!config.dryRun) {
+          await sheetsService.updateOrderStatus(
+            shop.spreadsheetId, shop.sheetName, order.rowNumber, shop.columns,
+            { statusText: 'FOTO BELUM LENGKAP' }
+          ).catch(() => {});
+        }
         state.updateJob(jobId, { status: 'skipped', message: `Waiting: ${inspection.count}/${requiredPhotos} photos, ${timeInfo}`, progress: 100 });
         state.completeJob(jobId, 'skipped');
         return;
@@ -364,6 +433,19 @@ async function processOrder(
         limit: photosToUse,
         sortByNewest: true,
       });
+
+      // ── Step 4c: Duplicate if not enough ──────────────────────────────
+      if (localPaths.length > 0 && localPaths.length < requiredPhotos) {
+        const initialCount = localPaths.length;
+        logger.info('ORCH', `[${shopName}] ${resi}: Only ${initialCount} photos downloaded. Duplicating to reach exactly ${requiredPhotos}...`);
+        
+        let sourceIndex = 0;
+        while (localPaths.length < requiredPhotos) {
+          // Re-use the paths sequentially
+          localPaths.push(localPaths[sourceIndex % initialCount]);
+          sourceIndex++;
+        }
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(`Download failed: ${msg}`);
@@ -409,23 +491,45 @@ async function processOrder(
     }
 
     // ── Step 7: Mark as processed in spreadsheet ──────────────────────
+    // Step 7: Tandai selesai di spreadsheet
     if (!config.dryRun) {
-      state.updateJob(jobId, { status: 'marking', message: 'Marking as BOT in spreadsheet...', progress: 90 });
+      state.updateJob(jobId, { status: 'marking', message: 'Menulis SELESAI ke spreadsheet...', progress: 90 });
 
       try {
-        await sheetsService.markAsProcessed(
+        await sheetsService.updateOrderStatus(
           shop.spreadsheetId,
           shop.sheetName,
           order.rowNumber,
           shop.columns,
-          config.editorText,
+          {
+            statusText: 'SELESAI',
+            botDone: true,
+            batchText: config.batchText,
+          }
         );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(`Sheet marking failed: ${msg}`);
+        throw new Error(`Gagal menulis status ke spreadsheet: `+msg);
+      }
+
+      // Step 8: Simpan ke DB Lokal (anti-duplikasi persisten)
+      // Dilakukan SETELAH sheets berhasil — jika sheets throw, DB tidak tertulis
+      // sehingga order bisa retry di sesi berikutnya.
+      try {
+        dbService.markOrderProcessed(
+          shopName,
+          resi,
+          order.variant,
+          config.batchText,
+          order.rowNumber,
+        );
+      } catch (dbErr: unknown) {
+        // DB write failure bukan fatal — sheets sudah terupdate, cukup log
+        const msg = dbErr instanceof Error ? dbErr.message : String(dbErr);
+        logger.warn('ORCH', `[`+shopName+`] Gagal menulis ke DB lokal (non-fatal): `+msg);
       }
     } else {
-      logger.info('ORCH', `[${shopName}] DRY RUN: Would mark row ${order.rowNumber} as BOT`);
+      logger.info('ORCH', `[`+shopName+`] DRY RUN: Would mark row `+order.rowNumber+` as SELESAI & DONE`);
     }
 
     // ── Done! ─────────────────────────────────────────────────────────

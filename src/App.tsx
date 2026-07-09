@@ -231,7 +231,7 @@ export default function App() {
         pkg.sheetIndex,
         pkg.totalSheets,
         aiEngine === 'none' ? null : aiEngine,
-        batchColor // Tampilkan warna batch agar preview akurat
+        batchColor
       );
       setPreviewUrl(url);
     } catch (err: any) {
@@ -508,6 +508,7 @@ export default function App() {
                </p>
             </div>
           </div>
+
         </aside>
 
         {/* Right Content */}
