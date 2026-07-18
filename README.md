@@ -1,347 +1,123 @@
 <div align="center">
 
-# 🖨️ AutoCollage A3+
-
-### Automated Polaroid Photo Collage Generator
+# 🖨️ AutoCollage A3+ (Sistem Kolase Foto Otomatis)
 
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white)](https://typescriptlang.org)
-[![Vite](https://img.shields.io/badge/Vite-6-646CFF?logo=vite&logoColor=white)](https://vitejs.dev)
-[![Tailwind](https://img.shields.io/badge/Tailwind-4-06B6D4?logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-339933?logo=node.js&logoColor=white)](https://nodejs.org)
-[![License](https://img.shields.io/badge/License-Private-red)](#)
 
-**Generate print-ready A3+ polaroid collage sheets from local folders or ZIP files.**
-**Batch process TikTok photo orders with AI face detection & Google Drive automation.**
+**Mengubah ribuan foto pelanggan menjadi lembaran PDF siap cetak (Ukuran A3+) secara instan dan otomatis!**
+*Sangat cocok untuk bisnis cetak foto Polaroid, Gantungan Kunci, atau Stiker dengan pesanan massal dari TikTok Shop/Shopee.*
 
 ---
-
-[Features](#-features) · [Quick Start](#-quick-start) · [Architecture](#-architecture) · [Worker Setup](#-worker-automation-setup) · [Configuration](#-configuration)
 
 </div>
 
----
+## 💡 Apa Itu Aplikasi Ini? (Untuk Orang Awam)
+Jika Anda memiliki bisnis cetak foto, memindahkan dan menyusun foto pelanggan satu per satu ke dalam ukuran A3 sangatlah memakan waktu. 
 
-## ✨ Features
-
-### 🎨 Manual Collage Generator (Frontend)
-
-| Feature | Description |
-|---------|-------------|
-| **📁 Folder Upload** | Select a local folder — auto-groups photos by subfolder |
-| **📦 ZIP Upload** | Upload a `.zip` file — auto-extracts & groups by internal folders |
-| **🖱️ Drag & Drop** | Drop folders or ZIP files directly into the app |
-| **🤖 AI Face Detection** | Smart crop that centers faces in each polaroid frame |
-| **📐 5×5 Grid Layout** | 25 polaroid photos per A3+ sheet (31×47cm, 350 DPI) |
-| **🎯 Crop Marks** | Print-ready cut lines for professional trimming |
-| **🏷️ Batch Color Tags** | Unique color identifier per batch to prevent mix-ups |
-| **📄 PDF & PNG Export** | Multi-page PDF or individual PNG per sheet |
-| **👁️ Live Preview** | Preview any sheet before exporting |
-
-### 🤖 AI Engine Options
-
-| Engine | Cost | Speed | Description |
-|--------|------|-------|-------------|
-| **OFF** | Free | — | No face detection, center-crop only |
-| **STANDARD** | Free | Fast | Local GPU via face-api.js (SSD MobileNet) |
-| **PREMIUM** | Paid | Smart | OpenAI GPT-4o-mini vision API |
-
-### ⚙️ Worker Automation (Backend)
-
-| Feature | Description |
-|---------|-------------|
-| **📂 Google Drive Scan** | Auto-scans Drive folders for new photo orders |
-| **📊 Sheets Validation** | Cross-validates orders against Google Spreadsheet |
-| **🖨️ Auto PDF Generation** | Server-side collage generation with Sharp image enhancement |
-| **☁️ Auto Upload** | Uploads finished PDFs back to Google Drive |
-| **✅ Auto Mark Done** | Marks processed orders in spreadsheet Column K |
-| **🔄 Two-Phase Processing** | Phase 1 (DD-MM-YYYY) + Phase 2 (YYYY-MM-DD migration) |
-| **📊 Dashboard** | Real-time web dashboard with stats, logs & controls |
-| **🛡️ Anti-Duplicate** | Multi-layer protection (Drive check, lock, sheet status) |
+Aplikasi ini adalah **Asisten Pintar** Anda. Aplikasi ini punya dua fungsi:
+1. **Mode Manual (Aplikasi Web):** Anda cukup *drag & drop* (geser) folder berisi foto pelanggan ke layar, dan sistem akan langsung menatanya menjadi 25 kotak rapi (layout 5x5) per lembar A3+, lengkap dengan garis potong dan deteksi wajah agar tidak terpotong.
+2. **Mode Robot Otomatis 24/7 (Worker):** Ini adalah jantung utamanya! Robot ini akan berjalan sendiri memantau **Google Drive** Anda. Jika ada pesanan baru masuk dari *WhatsApp Bot*, robot ini akan otomatis mencocokkannya dengan data pesanan di **Google Sheets**, mendownload fotonya, menjadikannya PDF, meng-uploadnya kembali ke Drive untuk dicetak, lalu menceklis statusnya di Sheets menjadi "SELESAI". Anda tinggal rebahan!
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Status Pengembangan Saat Ini (Current State)
+Saat ini sistem **sudah selesai 100% dan stabil (Production Ready)** dengan mengusung versi 2.1 (Arsitektur Multi-Toko).
+- **Frontend** (Aplikasi Web) sudah memiliki antarmuka yang modern (menggunakan React + Vite + Tailwind 4) dan bisa mendeteksi wajah secara pintar menggunakan *AI Hybrid* (Lokal maupun OpenAI).
+- **Backend Worker** sudah tangguh dan memiliki *Dashboard Web* mini (berjalan di port 4000) untuk memantau mesin secara *real-time*. 
+- **Database Lokal** (SQLite) sudah tertanam untuk mencegah mesin mencetak dua kali meski server *restart/mati lampu*.
 
-### Prerequisites
+---
 
-- **Node.js** v18 or higher
-- **npm** v9 or higher
+## 🏗️ Bagaimana Cara Kerja Mesin Robotnya? (Alur Sistem)
 
-### Frontend (Manual Collage)
+1. **Memantau Toko (Orchestrator):** Mesin akan memindai Google Drive dari banyak toko (Misal: Toko Ventura, Giftyours) yang sudah disetel di `.env`. 
+2. **Verifikasi Pesanan:** Jika menemukan folder foto (misal: "JX12345_25 Pcs"), mesin akan mengecek **Google Sheets** di baris resi `JX12345`.
+3. **Menunggu Lengkap (Stale Check):** Jika pelanggan baru kirim 20 foto padahal pesanannya 25 Pcs, mesin akan menunda proses cetak (menunggu pelanggan melengkapi). Namun, jika sudah berhari-hari dibiarkan *(stale)*, mesin akan otomatis menduplikat 5 foto acak agar kertas tidak mubazir kosong.
+4. **Desain & Cetak (PDF Engine):** Mesin mengunduh foto, memoles tingkat kecerahan (+5%), kontras (+10%), saturasi (+20%), dan menyusunnya di kanvas berukuran A3+ (31x47cm, ketajaman tinggi 350 DPI).
+5. **Upload & Konfirmasi:** PDF hasil cetak diunggah kembali ke Drive, dan kolom `Status` di Sheets otomatis diubah menjadi `SELESAI` serta ditandai `DONE` oleh bot.
 
+---
+
+## ⚠️ CATATAN PENTING UNTUK DEVELOPER (Bugs, Limitasi, & Tech Debt)
+
+Untuk *developer* atau pemrogram yang akan melanjutkan sistem ini, mohon baca bagian ini dengan sangat teliti. Ini adalah hal-hal yang rawan *error* di *production*:
+
+### 1. Kaku pada Kolom Google Sheets (Hardcoded Columns)
+*File: `worker/services/sheetsService.ts` (Baris 188-192)*
+- Sistem membaca kolom secara **hardcoded** menggunakan index (Kolom A = Tanggal, Kolom B = Resi, Kolom G = Variasi, Kolom H = QTY, Kolom J = Status Transaksi).
+- **BAHAYA:** Jika admin toko **menyisipkan (insert)** atau **menggeser** kolom-kolom ini di Google Sheets, seluruh sistem otomatis akan hancur dan gagal membaca data. Anda harus mengedukasi admin toko untuk *tidak pernah merombak* urutan kolom A sampai J. (Kolom setelah J seperti "DIKERJAKAN BOT" sudah dideteksi secara otomatis/dinamis).
+
+### 2. Isu Caching Google Sheets (Stale Cache)
+*File: `worker/services/sheetsService.ts` (Baris 29)*
+- Agar tidak terkena *Rate Limit* (Google membatasi tarikan data bertubi-tubi), mesin ini menyimpan (*cache*) data sheets selama **2 menit** (`CACHE_TTL_MS = 120_000`). 
+- **EFEK SAMPING:** Jika ada admin manusia yang mengubah data di Sheets secara manual, robot baru akan "sadar" terhadap perubahan tersebut 2 menit kemudian.
+
+### 3. Akurasi Deteksi Wajah AI
+*File: `src/utils/aiService.ts`*
+- **Mode Lokal (`face-api.js`):** Sangat cepat dan gratis, tapi **kurang cerdas**. AI lokal sulit mendeteksi wajah jika posisinya miring ekstrim, fotonya gelap, atau wajahnya sangat kecil (beramai-ramai dari jauh).
+- **Mode Premium (`OpenAI GPT-4o-mini`):** Sangat pintar, tapi **berbayar** (butuh `OPENAI_API_KEY`) dan lebih lambat karena foto harus dikirim ke server OpenAI (terikat *limit internet/API*).
+
+### 4. Ancaman RAM Penuh (Memory Leak / OOM)
+*File: `worker/engine/pdfEngine.ts`*
+- *Rendering* file PDF berukuran A3+ dengan resolusi tinggi (350 DPI) sangat menguras memori (RAM). Jika Anda menyetel `MAX_CONCURRENCY` di atas 5 (menjalankan 5 proses rendering secara bersamaan), server VPS berkapasitas RAM 2GB bisa dipastikan akan mati lemas (*Out of Memory / Crash*).
+- Sangat disarankan untuk membatasi `MAX_CONCURRENCY=3` jika server VPS Anda tidak memiliki RAM besar.
+
+### 5. Pelindung Anti-Duplikat Berlapis
+*File: `worker/core/orchestrator.ts`*
+- Karena proses cetak melibatkan biaya kertas dan tinta asli, mesin ini punya **6 Lapis Pelindung** agar 1 Resi tidak dicetak 2x. Termasuk `worker.db` (SQLite) yang mengingat selamanya.
+- **TIPS DEV:** Jika tim produksi komplain "Kok pesanan ini gak mau diproses robot?", cek *Dashboard Bot* di port 4000, lalu gunakan fitur **Hapus Data Resi** dari database agar mesin bisa memproses ulang pesanan tersebut.
+
+---
+
+## 🛠️ Panduan Instalasi (Untuk Admin/Operator)
+
+### Syarat Wajib:
+- Node.js versi 18 ke atas.
+- *Google Cloud OAuth Client ID* (File `credentials.json`).
+
+### Langkah-langkah:
+1. **Clone dan Install**
+   Buka terminal / Command Prompt:
+   ```bash
+   git clone https://github.com/612202300099-crypto/auto-collage-tools.git
+   cd auto-collage-tools
+   npm install
+   cp .env.example .env
+   ```
+
+2. **Isi Konfigurasi (`.env`)**
+   Buka file `.env`. Anda WAJIB mengisi:
+   - `DRIVE_ROOT_FOLDER_ID="ID-FOLDER-DRIVE-UTAMA"`
+   - `SHOPS='[{"name":"Ventura","spreadsheetId":"ID-SHEETS-NYA"}]'` *(Format penulisan harus berupa JSON Array agar bisa banyak toko)*
+
+3. **Login ke Google (Hanya 1x Seumur Hidup)**
+   ```bash
+   npm run worker:auth
+   ```
+   *Terminal akan memunculkan link. Buka di Chrome, login akun Google, berikan izin, lalu copy kode rahasianya kembali ke terminal.*
+
+---
+
+## 🚀 Cara Menjalankan
+
+### A. Untuk Mode Manual (Buka Web Frontend)
+Cocok jika admin ingin menata foto secara mandiri (*drag and drop*).
 ```bash
-# 1. Clone the repository
-git clone https://github.com/612202300099-crypto/auto-collage-tools.git
-cd auto-collage-tools
-
-# 2. Install dependencies
-npm install
-
-# 3. Create environment file
-cp .env.example .env
-
-# 4. Start development server
 npm run dev
 ```
+Buka browser dan ketik: `http://localhost:5173`.
 
-Open **http://localhost:5173** — ready to use! No API keys needed for basic usage.
-
-> **Optional:** For Premium AI face detection, add your `OPENAI_API_KEY` to `.env` and deploy the `/api/detect-face` endpoint on Vercel.
-
----
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Frontend (React + Vite)                     │
-│  ┌──────────┐  ┌──────────────┐  ┌───────────┐  ┌───────────┐ │
-│  │ App.tsx   │→│collageGen.ts │→│ aiService  │→│ pdfExport │ │
-│  │ (UI)     │  │ (Canvas)     │  │ (Face AI)  │  │ (jsPDF)   │ │
-│  └──────────┘  └──────────────┘  └─────┬─────┘  └───────────┘ │
-│       ↑                                │                        │
-│  ┌──────────┐                    ┌─────┴─────┐                 │
-│  │ zipExtr. │                    │ Local GPU │                 │
-│  │ (fflate) │                    │ face-api  │                 │
-│  └──────────┘                    └───────────┘                 │
-├─────────────────────────────────────────────────────────────────┤
-│                   Vercel Serverless API                         │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │  /api/detect-face  →  OpenAI GPT-4o-mini (Premium AI)     │ │
-│  └────────────────────────────────────────────────────────────┘ │
-├─────────────────────────────────────────────────────────────────┤
-│                   Worker Backend (Node.js)                      │
-│  ┌────────┐  ┌────────────┐  ┌──────────┐  ┌───────────────┐  │
-│  │ Express │→│Orchestrator│→│PDF Engine│→│ Google Drive  │  │
-│  │Dashboard│  │ (Scan Loop)│  │ (Canvas) │  │ Google Sheets │  │
-│  └────────┘  └────────────┘  └──────────┘  └───────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 📁 Folder Structure
-
-```
-auto-collage-tools/
-│
-├── src/                          # Frontend (React)
-│   ├── App.tsx                   # Main UI component
-│   ├── main.tsx                  # React entry point
-│   ├── index.css                 # Global styles + Tailwind
-│   └── utils/
-│       ├── collageGenerator.ts   # Canvas-based collage builder
-│       ├── aiService.ts          # Hybrid AI face detection
-│       ├── pdfExporter.ts        # PDF export with jsPDF
-│       ├── zipExtractor.ts       # ZIP extraction with fflate
-│       ├── colorUtils.ts         # Batch color generation
-│       └── yieldToMain.ts        # Main thread yielding utility
-│
-├── api/                          # Vercel Serverless Functions
-│   └── detect-face.ts            # OpenAI GPT-4o-mini face detection
-│
-├── worker/                       # Automation Backend
-│   ├── index.ts                  # Entry point
-│   ├── server.ts                 # Express API server
-│   ├── auth.ts                   # OAuth 2.0 token generator
-│   ├── config.ts                 # Environment configuration
-│   ├── types.ts                  # Shared TypeScript types
-│   ├── core/
-│   │   ├── orchestrator.ts       # Main automation loop
-│   │   ├── stateManager.ts       # Worker state management
-│   │   ├── workerPool.ts         # Concurrent task execution
-│   │   └── colorUtils.ts         # Server-side color utils
-│   ├── engine/
-│   │   ├── collageEngine.ts      # Server-side canvas (node-canvas)
-│   │   └── pdfEngine.ts          # Server-side PDF generation
-│   ├── services/
-│   │   ├── googleAuth.ts         # Google OAuth 2.0 client
-│   │   ├── driveService.ts       # Google Drive operations
-│   │   └── sheetsService.ts      # Google Sheets operations
-│   ├── utils/
-│   │   ├── folderParser.ts       # Folder name parsing & date utils
-│   │   └── logger.ts             # Structured logging
-│   └── dashboard/
-│       └── index.html            # Worker monitoring dashboard
-│
-├── public/models/                # Face detection ML models
-├── .env.example                  # Environment variable template
-├── vercel.json                   # Vercel deployment config
-├── vite.config.ts                # Vite build config
-├── tsconfig.json                 # TypeScript config
-└── package.json                  # Dependencies & scripts
-```
-
----
-
-## ⚙️ Worker Automation Setup
-
-The worker is a standalone Node.js process that automates the entire collage pipeline via Google Drive & Sheets.
-
-### 1. Google Cloud Setup
-
+### B. Untuk Mode Robot Otomatis
+Ini yang akan berjalan nonstop di server.
 ```bash
-# Create a project at https://console.cloud.google.com
-# Enable these APIs:
-#   - Google Drive API
-#   - Google Sheets API
-# Create OAuth 2.0 Client ID (Desktop Application)
-# Download the credentials JSON file
-```
-
-### 2. Place Credentials
-
-```bash
-mkdir credentials
-# Save the downloaded JSON as:
-cp ~/Downloads/client_secret_*.json credentials/credentials.json
-```
-
-### 3. Configure Environment
-
-```bash
-cp .env.example .env
-```
-
-Add these variables to your `.env`:
-
-```env
-# Google Drive root folder containing date folders
-DRIVE_ROOT_FOLDER_ID="your-drive-folder-id"
-
-# Google Spreadsheet ID (from the URL)
-SPREADSHEET_ID="your-spreadsheet-id"
-
-# Sheet names
-SHEET_NAME="FOTO POLAROID"
-EKSPORT_SHEET_NAME="EKSPORT"
-
-# Worker settings
-POLL_INTERVAL_MINUTES=5
-MAX_CONCURRENCY=5
-WORKER_PORT=4000
-
-# Optional: Secondary Drive folder for backup copies
-# SECONDARY_DRIVE_FOLDER_ID=""
-
-# Optional: Filter to specific date (DD-MM-YYYY or ALL)
-# TARGET_DATE_FILTER="ALL"
-```
-
-### 4. Authenticate
-
-```bash
-npm run worker:auth
-# Opens a URL → Login with Google → Paste the code back
-# Token saved to credentials/token.json
-```
-
-### 5. Run the Worker
-
-```bash
-# Start with dashboard (manual control)
-npm run worker
-
-# Start with auto-processing
+# Menyalakan robot dan menahan layar agar tidak tertutup otomatis (Auto Run)
 npm run worker:auto
-
-# Dry run (no uploads/writes)
-npm run worker:dry
 ```
-
-Open **http://localhost:4000** for the monitoring dashboard.
-
----
-
-## 📜 Available Scripts
-
-| Script | Description |
-|--------|-------------|
-| `npm run dev` | Start frontend dev server (port 5173) |
-| `npm run build` | Build frontend for production |
-| `npm run preview` | Preview production build locally |
-| `npm run lint` | TypeScript type checking |
-| `npm run worker` | Start worker with dashboard |
-| `npm run worker:auto` | Start worker + auto-begin processing |
-| `npm run worker:dry` | Dry run mode (no mutations) |
-| `npm run worker:auth` | Generate Google OAuth token |
+Anda bisa memantau pergerakan mesin, kecepatan proses, dan tombol kendali manual lewat **Dashboard Robot** dengan membuka browser dan masuk ke: `http://localhost:4000`.
 
 ---
-
-## 🔧 Configuration
-
-### Environment Variables
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `GEMINI_API_KEY` | No | — | Gemini AI API key (AI Studio) |
-| `OPENAI_API_KEY` | No | — | OpenAI key for Premium face detection |
-| `GOOGLE_CLIENT_ID` | No | — | OAuth client ID (for Vercel deployment) |
-| `GOOGLE_CLIENT_SECRET` | No | — | OAuth client secret (for Vercel deployment) |
-| `DRIVE_ROOT_FOLDER_ID` | Worker | — | Google Drive root folder ID |
-| `SPREADSHEET_ID` | Worker | — | Google Spreadsheet ID |
-| `SHEET_NAME` | Worker | `FOTO POLAROID` | Primary sheet name |
-| `EKSPORT_SHEET_NAME` | Worker | `EKSPORT` | Export sheet name |
-| `POLL_INTERVAL_MINUTES` | Worker | `5` | Scan interval (1–60 min) |
-| `MAX_CONCURRENCY` | Worker | `5` | Parallel jobs (1–20) |
-| `WORKER_PORT` | Worker | `4000` | Dashboard port |
-| `ENABLE_FACE_DETECTION` | Worker | `true` | Enable server-side face detection |
-| `DRY_RUN` | Worker | `false` | No uploads/writes when true |
-
----
-
-## 🛡️ Anti-Duplicate Protection
-
-The worker uses **6 layers** of duplicate prevention:
-
-| Layer | Check | Stage |
-|-------|-------|-------|
-| L1 | PDF already exists in Drive folder | Pre-process |
-| L2 | In-memory lock per resi number | Pre-process |
-| L3 | Column K already marked "done" | Validation |
-| L4 | Order status = "DIBATALKAN" | Validation |
-| L5 | Variant mismatch (folder vs sheet) | Validation |
-| L6 | Image count ≠ expected variant | Validation |
-
----
-
-## 🎨 Collage Specifications
-
-| Spec | Value |
-|------|-------|
-| **Paper Size** | A3+ (31 × 47 cm) |
-| **Resolution** | 350 DPI (4271 × 6477 px) |
-| **Grid** | 5 × 5 (25 photos per sheet) |
-| **Photo Size** | 6 × 9 cm per polaroid |
-| **Frame** | White border with bottom padding |
-| **Enhancement** | Brightness +5%, Saturation +20%, Contrast +10% |
-| **Output** | PDF (multi-page) or PNG (per sheet) |
-
----
-
-## 📄 Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| **Frontend** | React 19, TypeScript 5.8, Vite 6 |
-| **Styling** | Tailwind CSS 4, Lucide Icons, Framer Motion |
-| **AI (Local)** | face-api.js (SSD MobileNet v1) |
-| **AI (Premium)** | OpenAI GPT-4o-mini Vision |
-| **PDF** | jsPDF |
-| **ZIP** | fflate |
-| **HEIC** | heic2any |
-| **Backend** | Node.js, Express 5, tsx |
-| **Canvas** | Browser Canvas API + node-canvas + Sharp |
-| **Google APIs** | googleapis (Drive v3, Sheets v4) |
-| **Deployment** | Vercel (frontend + API), Local (worker) |
-
----
-
 <div align="center">
-
-**Built with ❤️ for the polaroid printing business**
-
-*AutoCollage A3+ — From photos to print-ready collages in seconds.*
-
+<i>Sistem asisten produksi andalan bisnis Polaroid masa kini.</i>
 </div>
