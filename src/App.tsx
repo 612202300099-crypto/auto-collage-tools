@@ -24,7 +24,7 @@ import { buildAndDownloadPDF } from './utils/pdfExporter';
 import type { SheetInput } from './utils/pdfExporter';
 import type { AIEngine } from './utils/aiService';
 import { generateRandomBatchColor } from './utils/colorUtils';
-import { extractZip, isZipFile, type ZipExtractionProgress } from './utils/zipExtractor';
+import { extractZip, isSupportedImageFileName, isZipFile, type ZipExtractionProgress } from './utils/zipExtractor';
 
 interface LocalPackage {
   name: string;
@@ -66,7 +66,7 @@ export default function App() {
     const groups: { [key: string]: File[] } = {};
     
     files.forEach((file) => {
-      const isImage = file.type.startsWith('image/') || /\.(heic|heif|webp|jpg|jpeg|png|bmp|tiff?)$/i.test(file.name);
+      const isImage = file.type.startsWith('image/') || isSupportedImageFileName(file.name);
       if (!isImage) return;
 
       const relativePath = (file as unknown as { webkitRelativePath: string }).webkitRelativePath || '';

@@ -21,7 +21,19 @@ import { logger } from '../utils/logger.ts';
 import type { DriveFolder, DriveFile } from '../types.ts';
 
 const MIME_FOLDER = 'application/vnd.google-apps.folder';
-const MIME_IMAGES = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg', 'image/heic', 'image/heif'];
+const IMAGE_NAME_EXTENSIONS = [
+  '.jpg', '.jpeg', '.jpe', '.jfif',
+  '.png', '.webp', '.heic', '.heif',
+  '.bmp', '.tif', '.tiff', '.gif', '.avif', '.svg',
+];
+
+function buildImageQuery(): string {
+  const nameFallbacks = IMAGE_NAME_EXTENSIONS.flatMap(ext => [
+    `name contains '${ext}'`,
+    `name contains '${ext.toUpperCase()}'`,
+  ]);
+  return [`mimeType contains 'image/'`, ...nameFallbacks].join(' or ');
+}
 
 /**
  * List all subfolders inside a given folder.
@@ -68,7 +80,7 @@ export async function listImageFiles(folderId: string): Promise<DriveFile[]> {
   const files: DriveFile[] = [];
   let pageToken: string | undefined;
 
-  const mimeQuery = MIME_IMAGES.map(m => `mimeType = '${m}'`).join(' or ');
+  const imageQuery = buildImageQuery();
   
   // Exclude common receipt/invoice keywords using Google Drive's built-in OCR (fullText)
   // This safely ignores order receipts without blocking IG or Chat screenshots!
@@ -83,7 +95,7 @@ export async function listImageFiles(folderId: string): Promise<DriveFile[]> {
 
   do {
     const res = await drive.files.list({
-      q: `'${folderId}' in parents and (${mimeQuery}) and trashed = false and ${receiptExclusions}`,
+      q: `'${folderId}' in parents and (${imageQuery}) and trashed = false and ${receiptExclusions}`,
       fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime, md5Checksum)',
       pageSize: 200,
       pageToken,

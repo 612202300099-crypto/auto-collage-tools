@@ -35,7 +35,7 @@ Saat ini sistem **sudah selesai 100% dan stabil (Production Ready)** dengan meng
 1. **Memantau Toko (Orchestrator):** Mesin akan memindai Google Drive dari banyak toko (Misal: Toko Ventura, Giftyours) yang sudah disetel di `.env`. 
 2. **Verifikasi Pesanan:** Jika menemukan folder foto (misal: "JX12345_25 Pcs"), mesin akan mengecek **Google Sheets** di baris resi `JX12345`.
 3. **Menunggu Lengkap (Stale Check):** Jika pelanggan baru kirim 20 foto padahal pesanannya 25 Pcs, mesin akan menunda proses cetak (menunggu pelanggan melengkapi). Namun, jika sudah berhari-hari dibiarkan *(stale)*, mesin akan otomatis menduplikat 5 foto acak agar kertas tidak mubazir kosong.
-4. **Desain & Cetak (PDF Engine):** Mesin mengunduh foto, memoles tingkat kecerahan (+5%), kontras (+10%), saturasi (+20%), dan menyusunnya di kanvas berukuran A3+ (31x47cm, ketajaman tinggi 350 DPI).
+4. **Desain & Cetak (PDF Engine):** Mesin mengunduh foto apa adanya tanpa filter warna/kecerahan otomatis, lalu menyusunnya di kanvas A3+ (31x47cm) dengan ketajaman tinggi 350 DPI.
 5. **Upload & Konfirmasi:** PDF hasil cetak diunggah kembali ke Drive, dan kolom `Status` di Sheets otomatis diubah menjadi `SELESAI` serta ditandai `DONE` oleh bot.
 
 ---

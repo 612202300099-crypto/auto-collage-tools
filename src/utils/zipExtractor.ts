@@ -21,8 +21,10 @@ import { unzipSync } from 'fflate';
 const MAX_ZIP_SIZE_BYTES = 500 * 1024 * 1024; // 500 MB
 
 /** Extensions recognized as images (lowercase, with dot) */
-const IMAGE_EXTENSIONS = new Set([
-  '.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif', '.bmp', '.tiff', '.tif',
+export const SUPPORTED_IMAGE_EXTENSIONS = new Set([
+  '.jpg', '.jpeg', '.jpe', '.jfif',
+  '.png', '.webp', '.heic', '.heif',
+  '.bmp', '.tiff', '.tif', '.gif', '.avif', '.svg',
 ]);
 
 /** Paths/filenames to always skip */
@@ -73,7 +75,11 @@ function getExtension(filename: string): string {
  */
 function isImageFile(filepath: string): boolean {
   const ext = getExtension(filepath);
-  return IMAGE_EXTENSIONS.has(ext);
+  return SUPPORTED_IMAGE_EXTENSIONS.has(ext);
+}
+
+export function isSupportedImageFileName(filename: string): boolean {
+  return isImageFile(filename);
 }
 
 /**
@@ -98,6 +104,8 @@ function getMimeType(filename: string): string {
   const mimeMap: Record<string, string> = {
     '.jpg': 'image/jpeg',
     '.jpeg': 'image/jpeg',
+    '.jpe': 'image/jpeg',
+    '.jfif': 'image/jpeg',
     '.png': 'image/png',
     '.webp': 'image/webp',
     '.heic': 'image/heic',
@@ -105,6 +113,9 @@ function getMimeType(filename: string): string {
     '.bmp': 'image/bmp',
     '.tiff': 'image/tiff',
     '.tif': 'image/tiff',
+    '.gif': 'image/gif',
+    '.avif': 'image/avif',
+    '.svg': 'image/svg+xml',
   };
   return mimeMap[ext] || 'application/octet-stream';
 }

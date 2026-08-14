@@ -2,13 +2,33 @@ import { yieldToMain } from './yieldToMain';
 import { detectFace, AIEngine } from './aiService';
 import heic2any from 'heic2any';
 
-/**
- * UNIVERSAL PRINT FILTER — Balance point antara Art Paper 230gsm dan 310gsm.
- * brightness +18% : kompensasi penyerapan tinta (dot gain) art paper
- * saturate  +38% : pulihkan warna yang kusam akibat absorbsi kertas
- * contrast  +1%  : sentuhan ringan agar foto tetap tajam, tanpa crush shadow
- */
-const PRINT_FILTER = 'brightness(1.18) saturate(1.38) contrast(1.01)';
+async function convertTiffToPngBlob(file: File): Promise<Blob> {
+  const UTIF = await import('utif');
+  const buffer = await file.arrayBuffer();
+  const ifds = UTIF.decode(buffer);
+  const firstPage = ifds[0];
+  if (!firstPage) throw new Error(`TIFF kosong: ${file.name}`);
+
+  UTIF.decodeImage(buffer, firstPage);
+  const rgba = UTIF.toRGBA8(firstPage);
+  const width = firstPage.width;
+  const height = firstPage.height;
+  if (!width || !height) throw new Error(`Ukuran TIFF tidak valid: ${file.name}`);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas tidak didukung di browser ini!');
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), width, height), 0, 0);
+
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error(`Gagal konversi TIFF: ${file.name}`));
+    }, 'image/png');
+  });
+}
 
 // ─────────────────────────────────────────────────────────────────
 // INTERNAL: build + draw canvas — dipakai oleh kedua export di bawah
@@ -49,6 +69,8 @@ async function buildCollageCanvas(
 
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas tidak didukung di browser ini!');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
 
   // Background putih kertas
   ctx.fillStyle = 'rgb(255, 255, 255)';
@@ -57,12 +79,19 @@ async function buildCollageCanvas(
   // Helper: load File → HTMLImageElement
   const loadImage = async (file: File): Promise<HTMLImageElement> => {
     let blobToLoad: Blob = file;
-    if (file.name.toLowerCase().match(/\.(heic|heif)$/i)) {
+    const lowerName = file.name.toLowerCase();
+    if (lowerName.match(/\.(heic|heif)$/i)) {
       try {
-        const converted = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 });
+        const converted = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.95 });
         blobToLoad = Array.isArray(converted) ? converted[0] : converted;
       } catch (e) {
         console.error(`Gagal dekode HEIC untuk ${file.name}`, e);
+      }
+    } else if (lowerName.match(/\.(tif|tiff)$/i)) {
+      try {
+        blobToLoad = await convertTiffToPngBlob(file);
+      } catch (e) {
+        console.error(`Gagal dekode TIFF untuk ${file.name}`, e);
       }
     }
     return new Promise((resolve, reject) => {
@@ -163,9 +192,6 @@ async function buildCollageCanvas(
     ctx.beginPath();
     ctx.rect(photoAreaX, photoAreaY, photoAreaW, photoAreaH);
     ctx.clip();
-    
-    // Universal print compensation filter
-    ctx.filter = PRINT_FILTER;
     ctx.drawImage(img, destX, destY, drawW, drawH);
     
     ctx.restore();

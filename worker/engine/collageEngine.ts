@@ -62,6 +62,8 @@ export async function buildCollageCanvas(options: CollageOptions): Promise<Canva
 
   const canvas = createCanvas(CANVAS_WIDTH, CANVAS_HEIGHT);
   const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  (ctx as any).imageSmoothingQuality = 'high';
 
   // Background putih kertas
   ctx.fillStyle = 'rgb(255, 255, 255)';
@@ -71,20 +73,16 @@ export async function buildCollageCanvas(options: CollageOptions): Promise<Canva
   const images: any[] = [];
   for (let i = 0; i < imagePaths.length; i++) {
     try {
-      // Decode and Enhance with Sharp
-      const processedBuffer = await sharp(imagePaths[i])
-        .modulate({
-          brightness: 1.05,
-          saturation: 1.2
-        })
-        .normalize() // Auto-contrast / histogram equalization
-        .toFormat('jpeg')
-        .jpeg({ quality: 90 })
+      // Decode only: keep the customer's photo colors original.
+      const decodedBuffer = await sharp(imagePaths[i])
+        .rotate()
+        .flatten({ background: '#ffffff' })
+        .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
         .toBuffer();
 
-      const img = await loadImage(processedBuffer);
+      const img = await loadImage(decodedBuffer);
       images.push(img);
-      onProgress?.(i + 1, imagePaths.length, `Loaded & Enhanced ${path.basename(imagePaths[i])}`);
+      onProgress?.(i + 1, imagePaths.length, `Loaded original ${path.basename(imagePaths[i])}`);
     } catch (err: any) {
       logger.warn('COLLAGE', `Failed to load image: ${path.basename(imagePaths[i])}: ${err.message}`);
     }
